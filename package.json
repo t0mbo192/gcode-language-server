@@ -1,0 +1,100 @@
+{
+  "name": "gcode-language-server",
+  "displayName": "G-Code Language Server",
+  "description": "Semantic diagnostics, hover docs, and completions for CNC G-code. A Python language server with a thin VS Code client.",
+  "version": "0.1.0",
+  "publisher": "t0mbo192",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/t0mbo192/vs_gcode.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:gcode"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "gcode",
+        "aliases": [
+          "G-Code",
+          "gcode"
+        ],
+        "extensions": [
+          ".nc",
+          ".cnc",
+          ".ngc",
+          ".tap",
+          ".gcode",
+          ".gc",
+          ".mpf",
+          ".spf",
+          ".eia",
+          ".ptp",
+          ".min",
+          ".din",
+          ".iso",
+          ".hnc",
+          ".ncc",
+          ".prg"
+        ],
+        "filenamePatterns": [
+          "O[0-9]*",
+          "o[0-9]*"
+        ],
+        "firstLine": "^%\\s*$",
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gcode",
+        "scopeName": "source.gcode",
+        "path": "./syntaxes/gcode.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "G-Code Language Server",
+      "properties": {
+        "gcode.dialect": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "fanuc",
+            "siemens",
+            "linuxcnc",
+            "marlin",
+            "okuma"
+          ],
+          "default": "auto",
+          "description": "Force a G-code dialect for every file. 'auto' picks per file: magic comment '(DIALECT: xxx)' on an early line, then file extension, then Fanuc."
+        },
+        "gcode.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to the Python interpreter used to run the language server (needs pygls installed)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p ."
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "G-Code",
+  "scopeName": "source.gcode",
+  "patterns": [
+    {
+      "comment": "Semicolon comment (LinuxCNC, Marlin, many controls)",
+      "name": "comment.line.semicolon.gcode",
+      "match": ";.*$"
+    },
+    {
+      "comment": "Parenthesis comment (Fanuc style). end matches ')' or end-of-line so an unclosed comment doesn't swallow the whole file",
+      "name": "comment.block.parens.gcode",
+      "begin": "\\(",
+      "end": "\\)|$"
+    },
+    {
+      "comment": "Program start/end marker",
+      "name": "keyword.control.program-marker.gcode",
+      "match": "^%.*$"
+    },
+    {
+      "comment": "Block delete slash at start of line",
+      "name": "keyword.other.block-delete.gcode",
+      "match": "^/"
+    },
+    {
+      "comment": "Program number, e.g. O1000 (Fanuc) or :1000",
+      "name": "entity.name.function.program-number.gcode",
+      "match": "(?i)^\\s*[O:]\\s*\\d+"
+    },
+    {
+      "comment": "Line/sequence numbers, e.g. N10 — dimmed like metadata",
+      "name": "constant.numeric.line-number.gcode",
+      "match": "(?i)\\bN\\s*\\d+"
+    },
+    {
+      "comment": "G-codes (motion, cycles, settings), incl. decimals like G38.2",
+      "name": "keyword.control.gcode",
+      "match": "(?i)\\bG\\s*\\d+(\\.\\d+)?"
+    },
+    {
+      "comment": "M-codes (machine functions)",
+      "name": "support.function.mcode.gcode",
+      "match": "(?i)\\bM\\s*\\d+(\\.\\d+)?"
+    },
+    {
+      "comment": "Axis words: linear XYZ, rotary ABC, secondary UVW, extruder E",
+      "name": "variable.parameter.axis.gcode",
+      "match": "(?i)\\b[XYZABCUVWE]\\s*[+-]?(\\d+\\.?\\d*|\\.\\d+)"
+    },
+    {
+      "comment": "Arc words: center offsets IJK, radius R",
+      "name": "variable.other.arc.gcode",
+      "match": "(?i)\\b[IJKR]\\s*[+-]?(\\d+\\.?\\d*|\\.\\d+)"
+    },
+    {
+      "comment": "Feed and spindle speed",
+      "name": "storage.type.feed-speed.gcode",
+      "match": "(?i)\\b[FS]\\s*[+-]?(\\d+\\.?\\d*|\\.\\d+)"
+    },
+    {
+      "comment": "Tool select and offset registers",
+      "name": "entity.name.tag.tool.gcode",
+      "match": "(?i)\\b[TDH]\\s*\\d+"
+    },
+    {
+      "comment": "Canned-cycle / dwell parameters",
+      "name": "variable.parameter.cycle.gcode",
+      "match": "(?i)\\b[PQL]\\s*[+-]?(\\d+\\.?\\d*|\\.\\d+)"
+    },
+    {
+      "comment": "Any bare number left over",
+      "name": "constant.numeric.gcode",
+      "match": "[+-]?(\\d+\\.?\\d*|\\.\\d+)"
+    }
+  ]
+}
