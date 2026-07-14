@@ -39,11 +39,28 @@ R_NO_TLO_AFTER_M6 = "no-g43-after-toolchange"  # Z move after M6, no G43 yet
 R_COMP_AT_END = "comp-active-at-end"       # G41/G42 still active at M2/M30
 R_ARC_NO_CENTER = "arc-missing-center"     # G2/G3 without I/J/K or R
 R_UNKNOWN_CODE = "unknown-code"            # G/M code not in the dialect table
+R_NO_COOLANT = "no-coolant-for-tool"       # a tool's first cut with coolant off
 
 ALL_RULES = frozenset({
     R_FEED_MISSING, R_SPINDLE_OFF, R_G43_NO_H, R_NO_TLO_AFTER_M6,
-    R_COMP_AT_END, R_ARC_NO_CENTER, R_UNKNOWN_CODE,
+    R_COMP_AT_END, R_ARC_NO_CENTER, R_UNKNOWN_CODE, R_NO_COOLANT,
 })
+
+# ---------------------------------------------------------------------------
+# Coolant M-codes (drives the no-coolant-for-tool rule)
+# ---------------------------------------------------------------------------
+# The engine only needs to know which M-codes switch coolant on and off —
+# everything else about the rule lives in gcode_parser.py. These two sets
+# are the DEFAULTS; each Dialect can override them (see the coolant_on /
+# coolant_off fields), because the same M number means different things on
+# different controls: M51 is through-spindle coolant on a Mazak but a
+# spindle-override switch on LinuxCNC. Codes listed in a coolant set but
+# absent from that dialect's known_m table still count as coolant for the
+# state machine; they'll just also raise the (info-level) unknown-code note
+# until you document them in the table.
+
+COOLANT_ON_CODES = frozenset({"M7", "M8"})    # mist, flood
+COOLANT_OFF_CODES = frozenset({"M9"})
 
 # ---------------------------------------------------------------------------
 # Hover docs shared by most milling controls (Fanuc-ish baseline)
@@ -149,6 +166,11 @@ class Dialect:
     rules: frozenset     # subset of ALL_RULES this dialect enforces
     known_g: dict        # normalized G-code -> hover markdown
     known_m: dict        # normalized M-code -> hover markdown
+    # Which M-codes switch coolant, for the no-coolant-for-tool rule.
+    # Defaults cover the classic mist/flood/off trio; override per dialect
+    # when the control has more (through-spindle, air blast, ...).
+    coolant_on: frozenset = COOLANT_ON_CODES
+    coolant_off: frozenset = COOLANT_OFF_CODES
 
 
 FANUC = Dialect(
@@ -203,6 +225,9 @@ SIEMENS = Dialect(
 
 # Marlin (3D printers): no spindle, no cutter/tool-length comp, so only the
 # geometry/feed rules apply. The M-code table is a different world.
+# The coolant rule is deliberately absent too: a printer's M106 is a
+# part-cooling fan, not coolant, and plenty of printer G-code never
+# touches M7/M8 legitimately.
 MARLIN = Dialect(
     name="marlin",
     title="Marlin (3D printer)",
@@ -250,7 +275,38 @@ OKUMA = Dialect(
     known_m=dict(_BASE_M),
 )
 
-DIALECTS = {d.name: d for d in (FANUC, LINUXCNC, SIEMENS, MARLIN, OKUMA)}
+# Mazak (MAZATROL Matrix / Smooth controls running EIA/ISO programs): the
+# G-code side is thoroughly Fanuc-like; what's different is the M-code
+# family — especially coolant, which goes well past mist/flood. CAUTION:
+# Mazak M-code assignments genuinely vary by machine model and installed
+# options (e.g. some machines put air-through-spindle on M132) — treat this
+# table as the common Integrex/machining-center baseline and verify every
+# code against YOUR machine's parameter list before trusting it.
+MAZAK = Dialect(
+    name="mazak",
+    title="Mazak",
+    rules=ALL_RULES,
+    known_g=dict(_BASE_G),
+    known_m={
+        **_BASE_M,
+        # Mazak's M7 is typically air/oil-mist blast rather than true mist
+        # coolant — same number as Fanuc, different plumbing.
+        "M7": "**M7 — Air blast / oil mist on** (Mazak). Air, not flood.",
+        "M19": "**M19 — Spindle orientation** (stop at a fixed angle).",
+        "M48": "**M48 — Feedrate override cancel OFF** — the override knob works.",
+        "M49": "**M49 — Feedrate override cancel ON** — the knob is ignored.",
+        "M50": "**M50 — Air blast on** (model-dependent: plain air on some machines, flood-air on others).",
+        "M51": "**M51 — Through-spindle coolant on** (milling spindle).",
+        "M163": "**M163 — Through-spindle coolant off** (Integrex family).",
+    },
+    # Air blast and through-spindle coolant both count as "coolant arrived
+    # for this tool" — a deliberate air-blast strategy is not a forgotten M8.
+    coolant_on=frozenset({"M7", "M8", "M50", "M51"}),
+    coolant_off=frozenset({"M9", "M163"}),
+)
+
+DIALECTS = {d.name: d for d in (FANUC, LINUXCNC, SIEMENS, MARLIN, OKUMA,
+                                MAZAK)}
 DEFAULT_DIALECT = "fanuc"
 
 # ---------------------------------------------------------------------------
@@ -267,6 +323,7 @@ EXTENSION_DIALECTS = {
     ".gcode": "marlin",  # 3D-printer flavor
     ".gc": "marlin",
     ".min": "okuma",
+    ".eia": "mazak",     # Mazak EIA/ISO program
 }
 
 # Escape hatch for ambiguous extensions: a magic comment near the top of the

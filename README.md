@@ -6,9 +6,6 @@ a ~40-line TypeScript shim connects it to VS Code. Because the smart part
 speaks the Language Server Protocol, the same server also works in Neovim,
 Kate, and Zed.
 
-> This project was scaffolded from a Claude chat design session — the full
-> transcript is in [docs/claude-chat-transcript.md](docs/claude-chat-transcript.md).
-
 ## Why this exists
 
 The popular G-Code Syntax extension is a colorizer and counter: TextMate
@@ -55,8 +52,8 @@ The lifecycle, message by message:
 
 1. **[server/gcode_parser.py](server/gcode_parser.py)** — the modal-state
    engine. Zero dependencies, heavily commented, runnable standalone. This
-   is also the exact spot where an existing parser (e.g. gcode-tools) plugs
-   in: keep `GCodeParser.check_line()` and nothing else changes.
+   is also the exact spot where a different parsing engine would plug in:
+   keep `GCodeParser.check_line()` and nothing else changes.
 2. **[server/dialects.py](server/dialects.py)** — every dialect fact as
    plain data tables: which rules apply, which codes exist, hover text.
 3. **[server/server.py](server/server.py)** — the pygls glue. Translation
@@ -104,11 +101,41 @@ examples/demo.nc — dialect: fanuc
 | `comp-active-at-end` | warning | `G41`/`G42` still active at `M2`/`M30` |
 | `arc-missing-center` | error | `G2`/`G3` written with no `I`/`J`/`K`/`R` |
 | `unknown-code` | info | G/M code not in the dialect's table |
+| `no-coolant-for-tool` | warning | a tool's first cut with no `M7`/`M8` since its `M6` |
 
 **Honest caveat:** these are Fanuc-flavored starting points, written to be
 tuned by someone who actually runs machines. They're data-driven on purpose
 — enabling/disabling rules per dialect and expanding the code tables all
 happens in `dialects.py` without touching the engine.
+
+### A rule from the shop floor: the coolant check
+
+`no-coolant-for-tool` is the first rule contributed from running real
+machines rather than from a textbook: **every tool must turn its coolant on
+(`M7`/`M8`) before its first cut.** Details that matter:
+
+- It fires **once per tool change**, on the first cutting move or canned
+  cycle (`G81`...) after the `M6` — not on every dry line, because
+  intentional dry cutting exists (cast iron, graphite). That's also why
+  it's a warning, not an error.
+- Coolant on the same line as the cut counts, just like a same-line `F`.
+- Which M-codes mean "coolant" is **per-dialect data** (`coolant_on` /
+  `coolant_off` on each `Dialect`), because numbers collide across
+  controls: `M51` is through-spindle coolant on a Mazak but a
+  spindle-override switch on LinuxCNC. The Mazak dialect ships with
+  `M7/M8/M50/M51` on and `M9/M163` off; add your machines' codes there.
+- Marlin (3D printing) deliberately skips it — `M106` is a fan, not
+  coolant.
+
+`examples/demo_coolant.nc` walks through all three cases — a tool that does
+it right, a tool that cuts dry, and a dry drilling cycle:
+
+```
+examples/demo_coolant.nc — dialect: fanuc
+  line 21: warning [no-coolant-for-tool]   T2 starts cutting dry
+  line 29: warning [no-coolant-for-tool]   T3 drills dry (canned cycles count)
+  2 problem(s) found
+```
 
 ## File recognition
 
@@ -145,6 +172,7 @@ Fanuc as the default.
 | `linuxcnc` | `.ngc` | adds `G33`, `G38.2`, `G64`, `G76`, `M62/M63` |
 | `marlin` | `.gcode` `.gc` | no spindle/comp rules; printer M-codes (`M104`, `M109`, ...); `M30` deletes an SD file(!) |
 | `okuma` | `.min` | adds `G15/G16` work-coordinate codes |
+| `mazak` | `.eia` | Fanuc-like G side; the coolant rule accepts the full Mazak coolant family — `M51` through-spindle, `M50` air blast, `M163` TSC off. Mazak M-codes vary by model — verify the table against your machine |
 
 Magic comment example (first 5 lines of the file):
 
@@ -152,7 +180,9 @@ Magic comment example (first 5 lines of the file):
 (DIALECT: SIEMENS)
 ```
 
-See it working: `examples/demo_marlin.gcode` and `examples/demo_siemens.nc`.
+See it working: `examples/demo_marlin.gcode`, `examples/demo_siemens.nc`,
+and `examples/demo_mazak.eia` (through-spindle coolant satisfying the
+coolant rule).
 
 ## Troubleshooting (Windows)
 

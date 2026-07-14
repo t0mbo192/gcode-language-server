@@ -1,0 +1,24 @@
+%
+O3000 (MAZAK DEMO - THE .EIA EXTENSION SELECTS THE MAZAK DIALECT)
+(MAZAK COOLANT GOES PAST M7/M8: M51 = THROUGH-SPINDLE, M50 = AIR BLAST)
+(1 DELIBERATE MISTAKE BELOW - AND THE M51 TOOL IS CORRECTLY LEFT ALONE)
+
+(--- T1 deep-drills with through-spindle coolant: M51 satisfies the rule ---)
+N10 G21 G17 G90 G54
+N20 T1 M6
+N30 G0 X0 Y0
+N40 G43 H1 Z25.0
+N50 M3 S8000 M51             (through-spindle coolant on - hover M51 for the doc)
+N60 G81 Z-30.0 R2.0 F400.0   (deep hole with TSC - no complaint from the linter)
+N70 G80
+N80 G0 Z100.0 M9
+
+(--- T2 cuts dry: same mistake as any other control ---)
+N90 T2 M6
+N100 G0 X50.0 Y0
+N110 G43 H2 Z25.0
+N120 M3 S2400
+N130 G1 Z-1.0 F200.0         (<-- flagged: T2 never turned any coolant on)
+N140 M5
+N150 M30
+%

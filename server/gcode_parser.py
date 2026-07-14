@@ -13,9 +13,9 @@ That separation is the whole architecture in one sentence:
   * server.py only translates between this file and the Language Server
     Protocol — it contains no G-code knowledge at all.
 
-If you already have your own parser (e.g. from a gcode-tools project),
-this is the file it replaces or merges into. Keep the
-`GCodeParser.check_line()` interface and server.py never changes.
+If you ever want to swap in a different parsing engine, this is the file
+it replaces or merges into. Keep the `GCodeParser.check_line()` interface
+and server.py never changes.
 
 ----------------------------------------------------------------------------
 Why a linter for G-code must be a state machine, not a regex
@@ -38,13 +38,13 @@ try:
     from dialects import (
         DIALECTS, DEFAULT_DIALECT, resolve_dialect,
         R_FEED_MISSING, R_SPINDLE_OFF, R_G43_NO_H, R_NO_TLO_AFTER_M6,
-        R_COMP_AT_END, R_ARC_NO_CENTER, R_UNKNOWN_CODE,
+        R_COMP_AT_END, R_ARC_NO_CENTER, R_UNKNOWN_CODE, R_NO_COOLANT,
     )
 except ImportError:  # allow "from server import gcode_parser" style, too
     from server.dialects import (
         DIALECTS, DEFAULT_DIALECT, resolve_dialect,
         R_FEED_MISSING, R_SPINDLE_OFF, R_G43_NO_H, R_NO_TLO_AFTER_M6,
-        R_COMP_AT_END, R_ARC_NO_CENTER, R_UNKNOWN_CODE,
+        R_COMP_AT_END, R_ARC_NO_CENTER, R_UNKNOWN_CODE, R_NO_COOLANT,
     )
 
 # LSP severity values (kept as plain ints so this file stays dependency-free;
@@ -97,6 +97,11 @@ class ModalState:
     comp: str = None          # cutter comp: None, "G41" or "G42"
     tlo: bool = False         # tool length offset applied (G43/G44)
     awaiting_tlo: bool = False  # armed by M6, cleared by G43/G44
+    coolant_on: bool = False  # M7/M8 set it, M9 clears it
+    # The coolant check works like awaiting_tlo, but is armed from line 1:
+    # a program that starts cutting with whatever tool is already in the
+    # spindle still owes that tool coolant. M6 re-arms it for each new tool.
+    awaiting_coolant: bool = True
     units: str = None         # "mm" / "inch" (tracked for future rules)
     plane: str = "G17"        # arc plane (tracked for future rules)
     absolute: bool = True     # G90/G91 (tracked for future rules)
@@ -111,6 +116,12 @@ _WORD_RE = re.compile(r"(?i)([A-Z])\s*([+-]?(?:\d+\.\d*|\.\d+|\d+))")
 
 MOTION_CODES = {"G0", "G1", "G2", "G3"}
 CUTTING_CODES = {"G1", "G2", "G3"}          # moves that actually cut
+# Canned cycles cut material the moment the cycle word executes (the first
+# hole is drilled on that very line), even though they aren't plain motion
+# codes. The coolant rule treats them as a first cut; extending the feed and
+# spindle rules to them is a possible follow-up.
+CANNED_CYCLES = {"G73", "G74", "G76", "G81", "G82", "G83", "G84",
+                 "G85", "G86", "G87", "G88", "G89"}
 # E is the extruder axis on 3D printers — a G1 E5 line is still a move.
 AXIS_LETTERS = set("XYZABCUVWE")
 ARC_LETTERS = ("I", "J", "K", "R")
@@ -185,6 +196,7 @@ class GCodeParser:
         # --- 2. G words: state effects + G-specific rules -------------------
         line_motion = None      # explicit G0/G1/G2/G3 written on THIS line
         g43_on_line = False
+        cycle_word = None       # canned cycle (G81, G83...) started on THIS line
         for w in g_words:
             code = normalize_code(w.letter, w.number)
 
@@ -220,6 +232,8 @@ class GCodeParser:
                 st.absolute = True
             elif code == "G91":
                 st.absolute = False
+            elif code in CANNED_CYCLES:
+                cycle_word = cycle_word or w
 
             # RULE: unknown code for this dialect. Severity is only "info"
             # because the tables in dialects.py are starting points, not
@@ -243,6 +257,18 @@ class GCodeParser:
                 st.tlo = False
                 # Arm the "you changed tools but never applied G43" check.
                 st.awaiting_tlo = True
+                # Most controls kill coolant during a tool change (ATC
+                # safety), and well-posted programs re-issue M8 per tool —
+                # so the new tool starts dry and owes us a coolant-on.
+                st.coolant_on = False
+                st.awaiting_coolant = True
+            # Coolant codes come from the dialect (M51 is through-spindle
+            # coolant on a Mazak, a spindle-override switch on LinuxCNC).
+            elif code in self.dialect.coolant_on:
+                st.coolant_on = True
+                st.awaiting_coolant = False   # this tool's check is satisfied
+            elif code in self.dialect.coolant_off:
+                st.coolant_on = False
             elif code in ("M2", "M30"):
                 # RULE: ending the program with cutter comp still active.
                 # The next program (or a restart) inherits a sideways offset.
@@ -268,6 +294,7 @@ class GCodeParser:
         # "X5. on its own line is still a G1" situation).
         moves = line_motion is not None or (
             bool(axis_words) and st.motion in MOTION_CODES)
+        cutting_anchor = None   # set when THIS line makes a cutting move
 
         if moves:
             active = line_motion and normalize_code("G", line_motion.number) \
@@ -277,6 +304,7 @@ class GCodeParser:
             anchor = line_motion or axis_words[0]
 
             if active in CUTTING_CODES:
+                cutting_anchor = anchor
                 # RULE: feed move with no feedrate ever set. Most controls
                 # alarm out; the ones that don't will cut at whatever was
                 # left in the register. Both are wrong.
@@ -318,6 +346,31 @@ class GCodeParser:
                     R_NO_TLO_AFTER_M6))
                 # Warn once per tool change, not on every following line.
                 st.awaiting_tlo = False
+
+        # --- 5. the coolant check (per tool, not per line) -------------------
+        # RULE: every tool must turn coolant on — any code in the dialect's
+        # coolant_on set (M7/M8 everywhere; +M50/M51 on Mazak) — before its
+        # first cut.
+        # This is a shop-floor rule: dry cutting is occasionally intended
+        # (cast iron, graphite), which is why it's a warning and fires only
+        # ONCE per tool — on the first cutting move or canned-cycle start
+        # after the tool change — instead of nagging on every line. Coolant
+        # on the same line as the cut counts, just like a same-line F word,
+        # because M words execute with the move on real controls.
+        first_cut = cycle_word or cutting_anchor
+        if (self._on(R_NO_COOLANT) and st.awaiting_coolant
+                and first_cut is not None and not st.coolant_on):
+            who = f"T{st.tool}" if st.tool is not None else "the active tool"
+            # Name the codes THIS dialect accepts (M7/M8 on a Fanuc, up to
+            # M7/M8/M50/M51 on a Mazak) so the fix is right in the message.
+            cool = "/".join(sorted(self.dialect.coolant_on,
+                                   key=lambda c: float(c[1:])))
+            issues.append(Issue(
+                first_cut.col, first_cut.end,
+                f"First cut with {who} but coolant is off — no coolant code "
+                f"({cool}) since the tool change",
+                SEVERITY_WARNING, R_NO_COOLANT))
+            st.awaiting_coolant = False   # said it once; that's enough
 
         return issues
 
