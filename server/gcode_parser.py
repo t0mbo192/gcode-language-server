@@ -116,12 +116,11 @@ _WORD_RE = re.compile(r"(?i)([A-Z])\s*([+-]?(?:\d+\.\d*|\.\d+|\d+))")
 
 MOTION_CODES = {"G0", "G1", "G2", "G3"}
 CUTTING_CODES = {"G1", "G2", "G3"}          # moves that actually cut
-# Canned cycles cut material the moment the cycle word executes (the first
-# hole is drilled on that very line), even though they aren't plain motion
-# codes. The coolant rule treats them as a first cut; extending the feed and
-# spindle rules to them is a possible follow-up.
-CANNED_CYCLES = {"G73", "G74", "G76", "G81", "G82", "G83", "G84",
-                 "G85", "G86", "G87", "G88", "G89"}
+# Which G words start cutting the moment they execute is per-dialect data
+# now (Dialect.cycle_codes): Fanuc's G81 family drills its first hole on the
+# definition line itself, while Heidenhain only DEFINES with G200+ and cuts
+# at the call (G79). The coolant rule treats these as a first cut; extending
+# the feed and spindle rules to them is a possible follow-up.
 # E is the extruder axis on 3D printers — a G1 E5 line is still a move.
 AXIS_LETTERS = set("XYZABCUVWE")
 ARC_LETTERS = ("I", "J", "K", "R")
@@ -192,6 +191,19 @@ class GCodeParser:
             st.spindle_speed = float(by_letter["S"][-1].number)
         if "T" in by_letter:
             st.staged_tool = int(float(by_letter["T"][-1].number))
+            # On tool_change_on_t controls (Heidenhain) the T word IS the
+            # tool change — unless this line is a tool DEFINITION or
+            # preselect (G99/G51 there), whose T is just a table entry.
+            line_g_codes = {normalize_code(w.letter, w.number)
+                            for w in g_words}
+            if (self.dialect.tool_change_on_t
+                    and not (line_g_codes & self.dialect.tool_def_codes)):
+                st.tool = st.staged_tool
+                # Same bookkeeping as M6 below: the new tool starts dry and
+                # owes us a coolant-on before its first cut. No awaiting_tlo
+                # though — these controls apply length comp at the call.
+                st.coolant_on = False
+                st.awaiting_coolant = True
 
         # --- 2. G words: state effects + G-specific rules -------------------
         line_motion = None      # explicit G0/G1/G2/G3 written on THIS line
@@ -232,7 +244,7 @@ class GCodeParser:
                 st.absolute = True
             elif code == "G91":
                 st.absolute = False
-            elif code in CANNED_CYCLES:
+            elif code in self.dialect.cycle_codes:
                 cycle_word = cycle_word or w
 
             # RULE: unknown code for this dialect. Severity is only "info"
@@ -248,11 +260,24 @@ class GCodeParser:
         for w in m_words:
             code = normalize_code(w.letter, w.number)
 
-            if code in ("M3", "M4"):
+            # Spindle and coolant are read from the dialect and checked
+            # INDEPENDENTLY (two ifs, not one elif chain), because combo
+            # codes exist: Heidenhain's M13 is spindle-CW-plus-coolant in a
+            # single number, and must land in both branches.
+            if code in self.dialect.spindle_on:
                 st.spindle_on = True
             elif code == "M5":
                 st.spindle_on = False
-            elif code == "M6":
+
+            # Coolant codes come from the dialect (M51 is through-spindle
+            # coolant on a Mazak, a spindle-override switch on LinuxCNC).
+            if code in self.dialect.coolant_on:
+                st.coolant_on = True
+                st.awaiting_coolant = False   # this tool's check is satisfied
+            elif code in self.dialect.coolant_off:
+                st.coolant_on = False
+
+            if code == "M6":
                 st.tool = st.staged_tool
                 st.tlo = False
                 # Arm the "you changed tools but never applied G43" check.
@@ -262,13 +287,6 @@ class GCodeParser:
                 # so the new tool starts dry and owes us a coolant-on.
                 st.coolant_on = False
                 st.awaiting_coolant = True
-            # Coolant codes come from the dialect (M51 is through-spindle
-            # coolant on a Mazak, a spindle-override switch on LinuxCNC).
-            elif code in self.dialect.coolant_on:
-                st.coolant_on = True
-                st.awaiting_coolant = False   # this tool's check is satisfied
-            elif code in self.dialect.coolant_off:
-                st.coolant_on = False
             elif code in ("M2", "M30"):
                 # RULE: ending the program with cutter comp still active.
                 # The next program (or a restart) inherits a sideways offset.
@@ -349,8 +367,9 @@ class GCodeParser:
 
         # --- 5. the coolant check (per tool, not per line) -------------------
         # RULE: every tool must turn coolant on — any code in the dialect's
-        # coolant_on set (M7/M8 everywhere; +M50/M51 on Mazak) — before its
-        # first cut.
+        # coolant_on set (M7/M8 on most, plus each control's extras: Mazak
+        # M50/M51, Haas M73/M83/M88, Heidenhain's combo M13/M14) — before
+        # its first cut.
         # This is a shop-floor rule: dry cutting is occasionally intended
         # (cast iron, graphite), which is why it's a warning and fires only
         # ONCE per tool — on the first cutting move or canned-cycle start

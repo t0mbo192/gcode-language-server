@@ -62,6 +62,19 @@ ALL_RULES = frozenset({
 COOLANT_ON_CODES = frozenset({"M7", "M8"})    # mist, flood
 COOLANT_OFF_CODES = frozenset({"M9"})
 
+# Which M-codes start the spindle — dialect data for the same reason coolant
+# is: Heidenhain's M13/M14 are combo codes (spindle CW/CCW AND coolant on in
+# one number), so they belong in BOTH this set and coolant_on. The engine
+# checks the two sets independently to make that possible.
+SPINDLE_ON_CODES = frozenset({"M3", "M4"})
+
+# Fanuc-style canned cycles cut material the moment the cycle word executes
+# (the first hole is drilled on that very line). This is per-dialect data
+# because Heidenhain works the other way around: G200+ only DEFINES a cycle,
+# and nothing cuts until the call (G79) — so its set is just {"G79"}.
+CANNED_CYCLES = frozenset({"G73", "G74", "G76", "G81", "G82", "G83", "G84",
+                           "G85", "G86", "G87", "G88", "G89"})
+
 # ---------------------------------------------------------------------------
 # Hover docs shared by most milling controls (Fanuc-ish baseline)
 # ---------------------------------------------------------------------------
@@ -171,6 +184,19 @@ class Dialect:
     # when the control has more (through-spindle, air blast, ...).
     coolant_on: frozenset = COOLANT_ON_CODES
     coolant_off: frozenset = COOLANT_OFF_CODES
+    # Which M-codes start the spindle (see SPINDLE_ON_CODES above — combo
+    # codes like Heidenhain M13/M14 go in this AND coolant_on).
+    spindle_on: frozenset = SPINDLE_ON_CODES
+    # True on controls where the T word ITSELF performs the tool change
+    # (Heidenhain TOOL CALL / ISO "T5 G17 S4000") instead of staging a tool
+    # for a later M6. Arms the per-tool coolant check at the T word.
+    tool_change_on_t: bool = False
+    # When tool_change_on_t: G words that make a T on the same line NOT a
+    # change — tool definitions and preselects (Heidenhain G99 / G51).
+    tool_def_codes: frozenset = frozenset()
+    # Which G words start cutting the moment they execute (see the
+    # CANNED_CYCLES comment above).
+    cycle_codes: frozenset = CANNED_CYCLES
 
 
 FANUC = Dialect(
@@ -305,8 +331,195 @@ MAZAK = Dialect(
     coolant_off=frozenset({"M9", "M163"}),
 )
 
+# Haas (NGC / classic mill controls): the closest living relative of Fanuc —
+# programs interchange almost line-for-line — but Haas added its own G-codes
+# (bolt-hole patterns, G154 offsets, G187 smoothness) and a large coolant
+# family. The coolant part matters for the no-coolant-for-tool rule: plenty
+# of tools in a Haas carousel are plumbed for through-spindle coolant ONLY
+# (gun drills, coolant-through end mills) and legitimately never see an M8,
+# so M88 must count as coolant or every one of them is a false positive.
+# Same for the air options (M73/M83): air to the cut is a chosen strategy,
+# not a forgotten M8 — the Mazak table treats M50/M51 the same way.
+HAAS = Dialect(
+    name="haas",
+    title="Haas",
+    rules=ALL_RULES,
+    known_g={
+        **_BASE_G,
+        "G12": "**G12 — Circular pocket milling, CW** (Haas). `I`/`K` radii, `D` comp.",
+        "G13": "**G13 — Circular pocket milling, CCW** (Haas).",
+        # Dialect trap, third meaning for the same numbers: Haas G70/G71/G72
+        # are BOLT-HOLE PATTERNS — not Siemens inch/metric input, not Fanuc
+        # lathe finish/rough cycles.
+        "G70": "**G70 — Bolt hole circle** (Haas). `I` radius, `J` start angle, `L` holes. NOT inch input (Siemens) or a lathe finishing cycle (Fanuc).",
+        "G71": "**G71 — Bolt hole arc** (Haas). NOT metric input (Siemens) or a lathe roughing cycle (Fanuc).",
+        "G72": "**G72 — Bolt holes along an angle** (Haas).",
+        "G103": "**G103 — Limit block lookahead** (Haas). `P0`–`P15` blocks; `P1` effectively disables lookahead.",
+        "G154": "**G154 — Extended work offsets** `P1`–`P99` (Haas). The G54.1 equivalent.",
+        "G187": "**G187 — Smoothness / accuracy control** (Haas). `P1` rough … `P3` finish, `E` tolerance.",
+        "G234": "**G234 — Tool Center Point Control (TCPC)** for 5-axis (Haas option).",
+        "G254": "**G254 — Dynamic Work Offset (DWO) on** for 3+2 work (Haas option).",
+        "G255": "**G255 — Cancel Dynamic Work Offset (DWO)** (Haas).",
+    },
+    known_m={
+        **_BASE_M,
+        # Haas M7 is the shower/washdown option, not Fanuc's mist.
+        "M7": "**M7 — Shower coolant on** (Haas option). Low-pressure washdown, not mist.",
+        "M19": "**M19 — Orient spindle** (stop at a fixed angle; `P`/`R` = degrees).",
+        "M31": "**M31 — Chip conveyor forward** (Haas).",
+        "M33": "**M33 — Chip conveyor stop** (Haas).",
+        "M34": "**M34 — P-Cool nozzle down** one position (Haas programmable-coolant option).",
+        "M35": "**M35 — P-Cool nozzle up** one position (Haas).",
+        "M73": "**M73 — Through-tool air blast on** (Haas TAB option). Air out the spindle, not liquid.",
+        "M74": "**M74 — Through-tool air blast off** (Haas).",
+        "M83": "**M83 — Auto air jet on** (Haas AAG option).",
+        "M84": "**M84 — Auto air jet off** (Haas).",
+        "M88": "**M88 — Through-spindle coolant (TSC) on** (Haas). High-pressure coolant out the tool tip — a TSC-plumbed tool may run this INSTEAD of M8.",
+        "M89": "**M89 — Through-spindle coolant (TSC) off** (Haas). M9 does not turn TSC off.",
+        "M97": "**M97 — Local subprogram call** (Haas). `P` = the N line to jump to in THIS program, `L` = repeats.",
+    },
+    # Everything that delivers coolant OR air to the cut satisfies the rule:
+    # flood (M8), shower (M7), through-spindle coolant (M88), through-tool
+    # air (M73), air jet (M83). A TSC-only tool that programs M88 alone is
+    # doing it right. Note M9 only kills flood/shower on a Haas — TSC has
+    # its own off code (M89), which is why both are in coolant_off.
+    coolant_on=frozenset({"M7", "M8", "M73", "M83", "M88"}),
+    coolant_off=frozenset({"M9", "M74", "M84", "M89"}),
+)
+
+# Heidenhain TNC controls speak TWO languages, so they get TWO dialects:
+#
+#   * "heidenhain" — DIN/ISO mode (.i files): G-code, but with Heidenhain
+#     semantics. This one the engine can genuinely lint.
+#   * "klartext"   — conversational format (.h files): `L X+30 RL F250`,
+#     `TOOL CALL 5 Z S2500`. NOT G-code at all — see KLARTEXT below.
+#
+# The ISO mode differs from Fanuc in ways that are traps, not details, which
+# is why known_g is built from scratch instead of on _BASE_G:
+#   * The T word IS the tool change (TOOL CALL). There is no M6 in a normal
+#     program — hence tool_change_on_t=True, so the per-tool coolant check
+#     re-arms at each T. G99 defines a tool and G51 preselects one; a T on
+#     those lines is NOT a change (tool_def_codes).
+#   * Length comp comes from the tool table automatically at the tool call,
+#     so both G43 rules are dropped — and G43/G44 here mean PARAXIAL comp.
+#   * Cycles are define-then-call: G200+ (or old-style G83/G84) only stores
+#     the cycle; G79 executes it. cycle_codes={"G79"} keeps the coolant
+#     rule from treating a definition as a cut.
+#   * M13/M14 are combo codes: spindle CW/CCW + coolant on in one number.
+#     They sit in BOTH spindle_on and coolant_on — a program using M13 and
+#     never M3/M8 is completely normal on these controls.
+# As always: tables are a TNC 530/640-flavored starting point — verify
+# against your machine's manual.
+HEIDENHAIN = Dialect(
+    name="heidenhain",
+    title="Heidenhain (DIN/ISO)",
+    rules=ALL_RULES - {R_G43_NO_H, R_NO_TLO_AFTER_M6},
+    known_g={
+        "G0": "**G0 — Rapid move.**",
+        "G1": "**G1 — Linear feed move** at the active feedrate (`F`).",
+        "G2": "**G2 — Clockwise arc.** Center via `I`/`J`/`K` or radius via `R`.",
+        "G3": "**G3 — Counter-clockwise arc.**",
+        "G4": "**G4 — Dwell.** `F` = seconds (Heidenhain ISO).",
+        "G17": "**G17 — XY plane / tool axis Z.**",
+        "G18": "**G18 — XZ plane / tool axis Y.**",
+        "G19": "**G19 — YZ plane / tool axis X.**",
+        # Dialect trap: this is NOT the Fanuc reference-return.
+        "G28": "**G28 — Mirror image** (Heidenhain). NOT the Fanuc return-to-home.",
+        "G29": "**G29 — Transfer the last position as the pole (CC)** (Heidenhain).",
+        "G30": "**G30 — Blank form (BLK FORM) minimum point**, with the plane, e.g. `G30 G17 X+0 Y+0 Z-20`.",
+        "G31": "**G31 — Blank form (BLK FORM) maximum point**, e.g. `G31 G90 X+100 Y+100 Z+0`.",
+        "G40": "**G40 — Cancel radius compensation** (the Klartext `R0`).",
+        "G41": "**G41 — Radius compensation LEFT** of the contour (Klartext `RL`).",
+        "G42": "**G42 — Radius compensation RIGHT** of the contour (Klartext `RR`).",
+        # Trap: not Fanuc tool-length comp — length comes from the tool call.
+        "G43": "**G43 — Paraxial compensation: lengthen** (Heidenhain). NOT Fanuc tool-length comp — length offset is applied automatically by the tool call.",
+        "G44": "**G44 — Paraxial compensation: shorten** (Heidenhain).",
+        "G51": "**G51 — Tool preselect** (`T` = next tool into the changer). The `T` here is NOT a tool change.",
+        "G53": "**G53 — Datum shift from the datum table** (Heidenhain).",
+        "G54": "**G54 — Datum shift programmed in-line** (Heidenhain). NOT a Fanuc-style stored work offset.",
+        "G70": "**G70 — Inch units** (Heidenhain, in the program header). Same number, third meaning: Siemens inch input, Fanuc lathe finishing, Haas bolt circle.",
+        "G71": "**G71 — Millimeter units** (Heidenhain, e.g. `%name G71 *`).",
+        "G79": "**G79 — Cycle call (CYCL CALL).** Executes the last defined cycle — THIS is the line that cuts.",
+        # Trap: Cycle 19, not the Fanuc canned-cycle cancel.
+        "G80": "**G80 — Working plane cycle (Cycle 19)** (Heidenhain). NOT the Fanuc canned-cycle cancel.",
+        "G83": "**G83 — Pecking cycle DEFINITION** (old style). Stored only; `G79` executes it.",
+        "G84": "**G84 — Tapping cycle DEFINITION** (old style). Stored only; `G79` executes it.",
+        "G90": "**G90 — Absolute positioning.**",
+        "G91": "**G91 — Incremental positioning.**",
+        # Trap pair: nothing to do with Fanuc canned-cycle return planes.
+        "G98": "**G98 — Set a label (LBL SET)** for jumps/repeats (Heidenhain). NOT the Fanuc return-to-initial-level.",
+        "G99": "**G99 — Tool DEFINITION** (`T` number, `L` length, `R` radius) (Heidenhain). The `T` here is NOT a tool change.",
+        "G200": "**G200 — Drilling cycle** definition (`Q` parameters). Call with `G79`.",
+        "G201": "**G201 — Reaming cycle** definition.",
+        "G202": "**G202 — Boring cycle** definition.",
+        "G203": "**G203 — Universal drilling cycle** definition.",
+        "G204": "**G204 — Back boring cycle** definition.",
+        "G205": "**G205 — Universal pecking cycle** definition.",
+        "G206": "**G206 — Tapping with floating chuck** cycle definition.",
+        "G207": "**G207 — Rigid tapping** cycle definition.",
+        "G208": "**G208 — Bore milling** cycle definition.",
+        "G209": "**G209 — Tapping with chip breaking** cycle definition.",
+        "G251": "**G251 — Rectangular pocket** cycle definition.",
+        "G252": "**G252 — Circular pocket** cycle definition.",
+        "G253": "**G253 — Slot milling** cycle definition.",
+        "G254": "**G254 — Circular slot** cycle definition. (On Haas this number is DWO — dialect tables exist for a reason.)",
+    },
+    known_m={
+        "M0": "**M0 — Program stop.**",
+        "M1": "**M1 — Optional stop.**",
+        "M2": "**M2 — Program end.**",
+        "M3": "**M3 — Spindle on, clockwise.**",
+        "M4": "**M4 — Spindle on, counter-clockwise.**",
+        "M5": "**M5 — Spindle stop.**",
+        "M6": "**M6 — Tool change.** Rare in Heidenhain programs — the tool call (`T`) normally performs the change itself.",
+        "M8": "**M8 — Coolant on.**",
+        "M9": "**M9 — Coolant off.**",
+        "M13": "**M13 — Spindle CW + coolant on** in one code (= M3 + M8). Common on TNC programs.",
+        "M14": "**M14 — Spindle CCW + coolant on** in one code (= M4 + M8).",
+        "M30": "**M30 — Program end**, same as M2 on TNC controls.",
+        "M89": "**M89 — MODAL cycle call**: the defined cycle runs at every following positioning block.",
+        "M91": "**M91 — Coordinates in this block are machine-datum based** (Heidenhain).",
+        "M92": "**M92 — Coordinates refer to the additional machine datum** (Heidenhain).",
+        "M94": "**M94 — Reduce rotary axis display** to below 360°.",
+        "M97": "**M97 — Machine small contour steps** (Heidenhain). NOT the Haas local-subprogram call.",
+        "M98": "**M98 — Completely machine open contour corners** (Heidenhain). NOT the Fanuc subprogram call.",
+        "M99": "**M99 — Blockwise cycle call** (Heidenhain). NOT the Fanuc subprogram return.",
+        "M101": "**M101 — Automatic replacement with a twin tool** when tool life expires (machine-dependent).",
+        "M102": "**M102 — Cancel M101.**",
+        "M126": "**M126 — Rotary axes: shortest-path traverse.**",
+        "M127": "**M127 — Cancel M126.**",
+        "M128": "**M128 — TCPM on** (keep tool tip position when rotary axes move).",
+        "M129": "**M129 — TCPM off.**",
+        "M140": "**M140 — Retract along the tool axis** (`MB` = distance / `MB MAX`).",
+    },
+    # M13/M14 are the reason spindle_on is dialect data at all — one code,
+    # both effects. No M7: TNC controls have no separate mist number.
+    coolant_on=frozenset({"M8", "M13", "M14"}),
+    coolant_off=frozenset({"M9"}),
+    spindle_on=frozenset({"M3", "M4", "M13", "M14"}),
+    tool_change_on_t=True,
+    tool_def_codes=frozenset({"G99", "G51"}),
+    cycle_codes=frozenset({"G79"}),
+)
+
+# Heidenhain Klartext (.h files) — the control's native conversational
+# format: `L X+30 RL F250`, `TOOL CALL 5 Z S2500`, `CYCL DEF 200`. That is
+# a different GRAMMAR, not a different code table, and this engine's
+# letter+number tokenizer would read garbage into it ("CALL 5" tokenizes as
+# L5). So this dialect is deliberately a mute: every rule off, every table
+# empty — a Klartext file gets NO squiggles instead of WRONG squiggles.
+# Linting Klartext for real means writing a second parser; until then,
+# honesty beats noise.
+KLARTEXT = Dialect(
+    name="klartext",
+    title="Heidenhain Klartext",
+    rules=frozenset(),
+    known_g={},
+    known_m={},
+)
+
 DIALECTS = {d.name: d for d in (FANUC, LINUXCNC, SIEMENS, MARLIN, OKUMA,
-                                MAZAK)}
+                                MAZAK, HAAS, HEIDENHAIN, KLARTEXT)}
 DEFAULT_DIALECT = "fanuc"
 
 # ---------------------------------------------------------------------------
@@ -314,7 +527,8 @@ DEFAULT_DIALECT = "fanuc"
 # ---------------------------------------------------------------------------
 # The file extension usually tells you the dialect, because each CAM post
 # writes a signature extension. Ambiguous ones (.nc could be anything) fall
-# through to the default.
+# through to the default. Haas is deliberately absent: Haas posts write
+# plain .nc, so it can only be chosen by the setting or a magic comment.
 
 EXTENSION_DIALECTS = {
     ".mpf": "siemens",   # Siemens main program
@@ -324,6 +538,14 @@ EXTENSION_DIALECTS = {
     ".gc": "marlin",
     ".min": "okuma",
     ".eia": "mazak",     # Mazak EIA/ISO program
+    ".i": "heidenhain",  # Heidenhain DIN/ISO program
+    # Heidenhain Klartext. .h is NOT claimed in package.json (it would
+    # hijack every C header in VS Code) — users opt in with a
+    # files.associations setting; this mapping then does the right thing.
+    ".h": "klartext",
+    # .hnc files are usually Heidenhain Klartext too. If yours are ISO
+    # G-code, a magic comment or the setting overrides this.
+    ".hnc": "klartext",
 }
 
 # Escape hatch for ambiguous extensions: a magic comment near the top of the

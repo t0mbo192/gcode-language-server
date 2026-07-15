@@ -101,7 +101,7 @@ examples/demo.nc — dialect: fanuc
 | `comp-active-at-end` | warning | `G41`/`G42` still active at `M2`/`M30` |
 | `arc-missing-center` | error | `G2`/`G3` written with no `I`/`J`/`K`/`R` |
 | `unknown-code` | info | G/M code not in the dialect's table |
-| `no-coolant-for-tool` | warning | a tool's first cut with no `M7`/`M8` since its `M6` |
+| `no-coolant-for-tool` | warning | a tool's first cut with no coolant-on code since its `M6` (which codes count is per-dialect) |
 
 **Honest caveat:** these are Fanuc-flavored starting points, written to be
 tuned by someone who actually runs machines. They're data-driven on purpose
@@ -124,6 +124,16 @@ machines rather than from a textbook: **every tool must turn its coolant on
   controls: `M51` is through-spindle coolant on a Mazak but a
   spindle-override switch on LinuxCNC. The Mazak dialect ships with
   `M7/M8/M50/M51` on and `M9/M163` off; add your machines' codes there.
+- **Through-spindle-coolant-only tools are not false positives.** A
+  coolant-through drill in a Haas that programs `M88` and never `M8` is
+  doing it right, so `M88` is in the Haas `coolant_on` set (as are the air
+  options `M73`/`M83` — air to the cut is a strategy, not a forgotten
+  `M8`). Same idea on Mazak with `M50`/`M51`.
+- **Combo codes work.** Heidenhain's `M13`/`M14` mean spindle-on *and*
+  coolant-on in one number; they sit in both the dialect's `spindle_on`
+  and `coolant_on` sets and the engine credits both. On Heidenhain the
+  check also re-arms on the `T` word itself, because a TNC tool call *is*
+  the tool change — there's no `M6` to hang it on.
 - Marlin (3D printing) deliberately skips it — `M106` is a fan, not
   coolant.
 
@@ -173,6 +183,9 @@ Fanuc as the default.
 | `marlin` | `.gcode` `.gc` | no spindle/comp rules; printer M-codes (`M104`, `M109`, ...); `M30` deletes an SD file(!) |
 | `okuma` | `.min` | adds `G15/G16` work-coordinate codes |
 | `mazak` | `.eia` | Fanuc-like G side; the coolant rule accepts the full Mazak coolant family — `M51` through-spindle, `M50` air blast, `M163` TSC off. Mazak M-codes vary by model — verify the table against your machine |
+| `haas` | magic comment or setting only (Haas posts write plain `.nc`) | Fanuc-like plus Haas G-codes (`G12/G13` circular pockets, `G70–G72` bolt patterns(!), `G103`, `G154` offsets, `G187`, `G234/G254/G255`); coolant rule accepts the whole Haas family — `M88/M89` TSC, `M73/M74` through-tool air, `M83/M84` air jet, `M7` shower — so a TSC-only tool programming `M88` alone passes |
+| `heidenhain` | `.i` | TNC controls in DIN/ISO mode. The `T` word IS the tool change (no `M6`), so the coolant check re-arms on it — except on `G99` tool-definition and `G51` preselect lines; `M13`/`M14` are combo codes counted as spindle **and** coolant; cycles are define-then-call (`G200`… stores, `G79` cuts). Full of traps the hovers call out: `G28` = mirror, `G43/G44` = paraxial comp, `G54` = datum shift, `G98/G99` = label/tool-def, `M99` = cycle call |
+| `klartext` | `.h` `.hnc` (see note below) | Heidenhain's conversational format (`L X+30 RL F250`, `TOOL CALL 5`) — **not G-code**. Every rule is deliberately off: a Klartext file gets no squiggles instead of wrong ones. Real Klartext linting needs its own parser — future work |
 
 Magic comment example (first 5 lines of the file):
 
@@ -180,9 +193,25 @@ Magic comment example (first 5 lines of the file):
 (DIALECT: SIEMENS)
 ```
 
+**The `.h` note:** VS Code isn't told to claim `.h` files (that would hijack
+every C header on your machine), so Klartext files don't open as G-code out
+of the box. In a workspace that only holds NC programs, opt in yourself:
+
+```jsonc
+// .vscode/settings.json
+"files.associations": { "*.h": "gcode" }
+```
+
+The server then maps `.h` → `klartext` on its own. `.hnc` is already claimed
+and assumed to be Klartext too — if your `.hnc` files are ISO G-code, say so
+with a magic comment or the `gcode.dialect` setting.
+
 See it working: `examples/demo_marlin.gcode`, `examples/demo_siemens.nc`,
-and `examples/demo_mazak.eia` (through-spindle coolant satisfying the
-coolant rule).
+`examples/demo_mazak.eia` (through-spindle coolant satisfying the coolant
+rule), `examples/demo_haas.nc` (a TSC-only tool and an air-blast-only tool
+passing, a genuinely dry tool flagged), `examples/demo_heidenhain.i` (T-word
+tool changes, `M13`, define-then-call cycles), and `examples/demo_klartext.h`
+(zero diagnostics on purpose).
 
 ## Troubleshooting (Windows)
 

@@ -44,7 +44,8 @@
           ".iso",
           ".hnc",
           ".ncc",
-          ".prg"
+          ".prg",
+          ".i"
         ],
         "filenamePatterns": [
           "O[0-9]*",
@@ -72,7 +73,11 @@
             "siemens",
             "linuxcnc",
             "marlin",
-            "okuma"
+            "okuma",
+            "mazak",
+            "haas",
+            "heidenhain",
+            "klartext"
           ],
           "default": "auto",
           "description": "Force a G-code dialect for every file. 'auto' picks per file: magic comment '(DIALECT: xxx)' on an early line, then file extension, then Fanuc."
