@@ -1,0 +1,94 @@
+# Builds the extension for every platform.
+#
+# Why a matrix: the language server is bundled into a standalone executable
+# with PyInstaller, and PyInstaller cannot cross-compile — a Windows exe must
+# be built on Windows, a mac binary on a mac. So each OS builds its own
+# platform-specific .vsix, plus one "universal" .vsix with no binary inside
+# (that one falls back to `python server/server.py` and needs Python+pygls).
+#
+# Triggers:
+#   - every push / PR to main: build everything, keep the .vsix files as
+#     downloadable artifacts (proves packaging still works)
+#   - pushing a tag like v0.2.0: additionally publish all packages to the
+#     VS Code Marketplace. Publishing needs a repo secret named VSCE_PAT
+#     (an Azure DevOps personal access token with Marketplace->Manage scope).
+
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  bundled:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win32-x64
+          - os: ubuntu-latest
+            target: linux-x64
+          # macos-13 is GitHub's last Intel runner; macos-latest is Apple
+          # Silicon. Two jobs -> both mac architectures get a native binary.
+          - os: macos-13
+            target: darwin-x64
+          - os: macos-latest
+            target: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r server/requirements.txt pyinstaller
+      - run: npm ci
+      # bundle-server runs PyInstaller -> server/bin/gcode-ls(.exe);
+      # vsce then packs that binary into a platform-specific .vsix
+      - run: npm run bundle-server
+      - run: npx vsce package --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: "*.vsix"
+
+  universal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      # No bundle-server here, so server/bin never exists and the package
+      # contains only the Python sources — the works-anywhere fallback.
+      - run: npx vsce package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-universal
+          path: "*.vsix"
+
+  publish:
+    # Only on version tags (v0.2.0, v1.0.0, ...). Create the tag with:
+    #   git tag v0.2.0 && git push origin v0.2.0
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [bundled, universal]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npx @vscode/vsce publish --packagePath packages/*.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

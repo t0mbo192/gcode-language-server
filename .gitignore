@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 *.vsix
 docs/claude-chat-transcript.md
+server/bin/
+build/
+icon-draft*

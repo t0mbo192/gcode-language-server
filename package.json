@@ -2,12 +2,13 @@
   "name": "gcode-language-server",
   "displayName": "G-Code Language Server",
   "description": "Semantic diagnostics, hover docs, and completions for CNC G-code. A Python language server with a thin VS Code client.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "t0mbo192",
   "license": "MIT",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/t0mbo192/vs_gcode.git"
+    "url": "https://github.com/t0mbo192/gcode-language-server.git"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -15,6 +16,23 @@
   "categories": [
     "Programming Languages",
     "Linters"
+  ],
+  "keywords": [
+    "gcode",
+    "g-code",
+    "cnc",
+    "nc",
+    "machining",
+    "linter",
+    "fanuc",
+    "haas",
+    "mazak",
+    "siemens",
+    "okuma",
+    "heidenhain",
+    "linuxcnc",
+    "marlin",
+    "lsp"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -92,7 +110,11 @@
   },
   "scripts": {
     "compile": "tsc -p .",
-    "watch": "tsc -w -p ."
+    "watch": "tsc -w -p .",
+    "vscode:prepublish": "npm run compile",
+    "bundle-server": "pyinstaller --noconfirm --clean --onefile --name gcode-ls --distpath server/bin --workpath build --specpath build server/server.py",
+    "package:win": "npm run bundle-server && vsce package --target win32-x64",
+    "package:universal": "node -e \"require('fs').rmSync('server/bin',{recursive:true,force:true})\" && vsce package"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
@@ -100,6 +122,7 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
     "typescript": "^5.4.0"
   }
 }
