@@ -60,7 +60,19 @@ The lifecycle, message by message:
    only, no G-code knowledge.
 4. **[src/extension.ts](src/extension.ts)** — the entire VS Code side.
 
-## Quick start
+## Installing
+
+- **Marketplace**: search "G-Code Language Server" (publisher `t0mbo192`).
+  The platform-specific builds (Windows x64, Linux x64, macOS Intel/Apple
+  Silicon) contain a standalone server executable — **no Python required**.
+- **From a `.vsix` file** (offline / locked-down work machines): Extensions
+  panel → `···` menu → *Install from VSIX…*, or
+  `code --install-extension gcode-language-server-win32-x64-0.2.0.vsix`.
+  Prefer the platform-specific file — it's self-contained. The universal
+  file works anywhere but needs Python 3 plus
+  `pip install "pygls>=1.3,<2.0"` on the machine.
+
+## Quick start (development)
 
 ```powershell
 # Prove the engine first — no editor involved:
@@ -216,20 +228,52 @@ tool changes, `M13`, define-then-call cycles), and `examples/demo_klartext.h`
 ## Troubleshooting (Windows)
 
 - **No squiggles, and Output → "G-Code Language Server" shows a spawn
-  error**: plain `python` isn't on PATH or resolves to the Microsoft Store
-  stub. Set `gcode.pythonPath` to a full interpreter path, e.g.
-  `C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python313\\python.exe`.
+  error** (universal build or dev checkout only — platform builds carry
+  their own server): plain `python` isn't on PATH or resolves to the
+  Microsoft Store stub. Set `gcode.pythonPath` to a full interpreter path,
+  e.g. `C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python313\\python.exe`.
 - **`ModuleNotFoundError: pygls`**: `pip install -r server\requirements.txt`
   into the same interpreter `gcode.pythonPath` points at.
+- **Bundled server ignored**: setting `gcode.pythonPath` to anything other
+  than the default `python` deliberately overrides the bundled executable
+  (it's the developer escape hatch for testing server changes). Reset the
+  setting to go back to the bundled server.
 - **Squiggles lag while typing**: intended — `didChange` is debounced 300 ms
   (`_DEBOUNCE_SECONDS` in `server.py`) because CAM posts can be megabytes.
 - **Wrong dialect chosen**: check the priority list above; the `source`
   field of every squiggle shows which dialect produced it, e.g.
   `gcode-ls (fanuc)`.
 
-## Packaging (later)
+## Packaging & releasing
 
-`vsce package` produces a `.vsix` for the Marketplace, but users need
-Python installed; bundling the server with PyInstaller removes that
-requirement. Not wired up yet — deliberately, while the code is still
-being reviewed and tuned.
+Two package flavors come out of this repo:
+
+- **Platform-specific** (`vsce package --target win32-x64` etc.) — carries
+  a standalone server executable (`server/bin/gcode-ls(.exe)`) built with
+  PyInstaller. Nothing to install on the user's machine — no Python, no pip.
+- **Universal** — no binary inside; the extension falls back to
+  `python server/server.py`, which needs Python 3 + pygls. Published as
+  the catch-all for platforms without a native build.
+
+How the extension picks a server at runtime (the logic lives in
+[src/extension.ts](src/extension.ts)):
+
+1. `gcode.pythonPath` set to anything but the default `python` → run
+   `server/server.py` with that interpreter (developer escape hatch;
+   beats the bundled exe on purpose).
+2. A bundled `server/bin/gcode-ls(.exe)` exists → run it.
+3. Otherwise → plain `python server/server.py`.
+
+Local builds on Windows:
+
+```powershell
+npm run package:win        # PyInstaller bundle + win32-x64 .vsix
+npm run package:universal  # removes server/bin, packs the Python fallback
+```
+
+PyInstaller can't cross-compile, so the other platforms are built by CI
+([.github/workflows/build.yml](.github/workflows/build.yml)): every push
+builds win32-x64, linux-x64, darwin-x64, darwin-arm64, and universal as
+downloadable artifacts. Pushing a tag like `v0.2.0` publishes all five to
+the Marketplace — that needs a `VSCE_PAT` repository secret (an Azure
+DevOps personal access token with the *Marketplace → Manage* scope).

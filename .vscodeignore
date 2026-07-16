@@ -1,0 +1,21 @@
+# Files excluded from the packaged .vsix (vsce reads this like a .gitignore).
+# NOTE: node_modules is deliberately NOT listed — vsce automatically includes
+# production dependencies (vscode-languageclient) and drops devDependencies.
+
+# TypeScript sources — the package ships the compiled out/ instead
+src/**
+tsconfig.json
+out/**/*.map
+
+# Dev-only folders
+.vscode/**
+.github/**
+docs/**
+build/**
+.gitignore
+
+# Python bytecode caches (regenerated on any machine that runs the server)
+server/__pycache__/**
+
+# Never nest packages inside packages
+*.vsix
