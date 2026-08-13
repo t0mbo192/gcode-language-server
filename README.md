@@ -102,6 +102,41 @@ examples/demo.nc — dialect: fanuc
   7 problem(s) found
 ```
 
+## Tests
+
+```powershell
+python -m unittest discover -s tests -t tests -v
+# or: npm test
+```
+
+117 tests, no test framework to install — the engine has zero dependencies
+and its tests keep it that way. `tests/test_server.py` needs `pygls` (it
+tests the LSP layer) and skips itself cleanly if you haven't installed it.
+CI runs the suite on Python 3.9, 3.12 and 3.13 before any `.vsix` is built.
+
+| file | what it covers |
+|---|---|
+| `test_gcode_parser.py` | tokenizing, modal state, one test per lint rule, and a malformed-input class — an editor buffer is linted on every keystroke, so it gets seen mid-word, mid-number and mid-paste |
+| `test_dialects.py` | dialect detection priority, table **invariants**, and the M-code coverage each control is documented as having |
+| `test_examples.py` | golden output for every file in `examples/` — the README quotes these, so they're pinned exactly |
+| `test_server.py` | LSP translation: diagnostic ranges, hover, completion, debounce and document lifecycle |
+
+The invariant tests in `test_dialects.py` are the ones that earn their keep.
+`dialects.py` is hand-maintained tables, and the realistic failure isn't
+"someone rewrote the engine", it's "someone pasted a code in the wrong
+format at 2am". A key of `M08` instead of `M8` matches nothing, silently,
+because every lookup goes through `normalize_code()`. So the suite asserts
+things like *every table key is already in normalized form*, *every code the
+engine treats as coolant is also documented*, and *`package.json`'s dialect
+list equals `DIALECTS`* — checks that hold for edits nobody has written a
+test for yet.
+
+That last kind found a real bug the first time it ran: `CANNED_CYCLES` told
+the engine that `G73`, `G74`, `G76` and `G85`–`G89` start cutting, but
+`_BASE_G` had never documented them — so `G73` peck drilling, about as
+common as machining gets, was drawing an "unknown G-code" note on every
+Fanuc-family program. They're documented now.
+
 ## The lint rules
 
 | rule id | severity | what it catches |
@@ -189,15 +224,47 @@ Fanuc as the default.
 
 | dialect | selected by | notable differences |
 |---|---|---|
-| `fanuc` | default | full rule set |
-| `siemens` | `.mpf` `.spf` | drops the G43 rules (length comp comes from the tool edge); `G70/G71` are inch/metric input, not lathe cycles |
-| `linuxcnc` | `.ngc` | adds `G33`, `G38.2`, `G64`, `G76`, `M62/M63` |
-| `marlin` | `.gcode` `.gc` | no spindle/comp rules; printer M-codes (`M104`, `M109`, ...); `M30` deletes an SD file(!) |
-| `okuma` | `.min` | adds `G15/G16` work-coordinate codes |
+| `fanuc` | default | full rule set; Fanuc's own `M0–M30` plus the builder-assigned codes common across Fanuc-based machines — `M29` rigid tapping, `M48/M49` override cancel, `M41/M42` gear ranges, `M10/M11` rotary clamp, `M60` pallet change, `M198` DNC call |
+| `siemens` | `.mpf` `.spf` | drops the G43 rules (length comp comes from the tool edge); `G70/G71` are inch/metric input, not lathe cycles; Siemens' predefined M set — `M17` end-of-subprogram, `M40–M45` gear stages, `M70` spindle-to-axis. `M98/M99` are **removed**: subprograms are called by name and return with `M17`/`RET` |
+| `linuxcnc` | `.ngc` | adds `G33`, `G38.2`, `G64`, `G76`, and the full RS-274/NGC M set — `M62–M65` synchronized vs. immediate digital output, `M66–M68` input wait and analog out, `M70–M73` modal-state stack, `M61` set-tool-without-changing, `M48–M53` overrides, plus the user-defined `M100–M199` block (documented and lint-clean, hidden from completion) |
+| `marlin` | `.gcode` `.gc` | no spindle/comp rules; ~100 printer M-codes across temperature, SD, job control, motion tuning, probing/leveling, drivers and EEPROM; also the laser/router codes the same firmware implements (`M3/M4/M5`, `M7/M8/M9` air assist); `M30` deletes an SD file(!) and `M29` stops an SD write rather than arming rigid tapping |
+| `okuma` | `.min` | adds `G15/G16` work-coordinate codes; M table deliberately minimal (see below) |
 | `mazak` | `.eia` | Fanuc-like G side; the coolant rule accepts the full Mazak coolant family — `M51` through-spindle, `M50` air blast, `M163` TSC off. Mazak M-codes vary by model — verify the table against your machine |
 | `haas` | magic comment or setting only (Haas posts write plain `.nc`) | Fanuc-like plus Haas G-codes (`G12/G13` circular pockets, `G70–G72` bolt patterns(!), `G103`, `G154` offsets, `G187`, `G234/G254/G255`); coolant rule accepts the whole Haas family — `M88/M89` TSC, `M73/M74` through-tool air, `M83/M84` air jet, `M7` shower — so a TSC-only tool programming `M88` alone passes |
 | `heidenhain` | `.i` | TNC controls in DIN/ISO mode. The `T` word IS the tool change (no `M6`), so the coolant check re-arms on it — except on `G99` tool-definition and `G51` preselect lines; `M13`/`M14` are combo codes counted as spindle **and** coolant; cycles are define-then-call (`G200`… stores, `G79` cuts). Full of traps the hovers call out: `G28` = mirror, `G43/G44` = paraxial comp, `G54` = datum shift, `G98/G99` = label/tool-def, `M99` = cycle call |
 | `klartext` | `.h` `.hnc` (see note below) | Heidenhain's conversational format (`L X+30 RL F250`, `TOOL CALL 5`) — **not G-code**. Every rule is deliberately off: a Klartext file gets no squiggles instead of wrong ones. Real Klartext linting needs its own parser — future work |
+
+### Two kinds of M-code
+
+The G-code side of a control is broadly standardised. The M-code side is
+not, and it splits in two — which half you're looking at tells you how much
+to trust any table, including the ones here:
+
+- **Specified by the control.** `M0`–`M30` nearly everywhere, plus
+  everything LinuxCNC and Marlin implement (open source, one
+  implementation, one correct answer). Those hovers can be taken at face
+  value.
+- **Assigned by the machine builder.** Most numbers above `M30` on a Fanuc,
+  Mazak, Okuma or Haas. Fanuc ships the control; Doosan decides that `M60`
+  changes a pallet. The same number is a pallet change on one machine and a
+  door opener on the next.
+
+Builder-assigned codes say so in their hover text. **Check them against
+your machine's own M-code list before trusting one** — that list is the
+only authoritative document. Two places where this shaped the code:
+
+- The `fanuc` dialect documents combo codes like `M13` (spindle *and*
+  coolant on many Fanuc-based machines) but deliberately does **not** credit
+  them as spindle-or-coolant. `fanuc` is also the fallback for files whose
+  real control was never identified, and on a Haas `M13` releases the
+  5th-axis brake — crediting it would silently suppress a real coolant
+  warning. If your machine has the combo, add `M13`/`M14` to that dialect's
+  `spindle_on` and `coolant_on` sets and it works immediately.
+- The `okuma` M table is the thinnest in the file on purpose. OSP machines
+  carry a long M list, but it's per-machine and per-option and the published
+  lists disagree with each other. A wrong hover on a machinist's screen is
+  worse than a missing one, so the guesses were left out for you to paste in
+  from your own machine's list.
 
 Magic comment example (first 5 lines of the file):
 
@@ -218,12 +285,61 @@ The server then maps `.h` → `klartext` on its own. `.hnc` is already claimed
 and assumed to be Klartext too — if your `.hnc` files are ISO G-code, say so
 with a magic comment or the `gcode.dialect` setting.
 
-See it working: `examples/demo_marlin.gcode`, `examples/demo_siemens.nc`,
+See it working: `examples/demo_linuxcnc.ngc` (synchronized vs. immediate
+outputs, the modal-state stack, a user-defined `M101`),
+`examples/demo_marlin.gcode`, `examples/demo_siemens.nc`,
 `examples/demo_mazak.eia` (through-spindle coolant satisfying the coolant
 rule), `examples/demo_haas.nc` (a TSC-only tool and an air-blast-only tool
 passing, a genuinely dry tool flagged), `examples/demo_heidenhain.i` (T-word
 tool changes, `M13`, define-then-call cycles), and `examples/demo_klartext.h`
 (zero diagnostics on purpose).
+
+## Security
+
+The threat model is small by construction, and worth stating so it stays
+that way: **the server parses text and returns text.** It never executes
+program content, never writes files, never opens a network connection, and
+has no `eval`, `exec`, `pickle` or `subprocess` anywhere in it. G-code
+arrives from an editor buffer — the least trustworthy input the project has,
+since a file is linted on every keystroke and so is seen mid-word,
+mid-number and mid-paste. Nothing on that path may raise or hang.
+
+What that leaves, and what was done about it:
+
+- **The interpreter path is machine-scoped.** `gcode.pythonPath` is spawned
+  as a process, so `"scope": "machine"` in `package.json` means it can only
+  be set in your own user settings. Without that, cloning a repo whose
+  `.vscode/settings.json` set it to an arbitrary executable would run that
+  executable the moment you opened a `.nc` file in the folder. The extension
+  also declares `untrustedWorkspaces: supported`, which is honest once the
+  path can't come from the workspace.
+- **No shell.** `vscode-languageclient` is given a command and an argument
+  array, never a command string, so there is no shell for a path to be
+  injected through.
+- **The regexes are linear.** The tokenizer runs on every line of
+  multi-megabyte CAM output; a quadratic pattern would hang the server on a
+  file you can't see is hostile. There is no nested quantifier in any of
+  them, and `test_pathological_line_is_not_a_regex_bomb` keeps it that way.
+- **Malformed numbers can't cost you the file's diagnostics.** Two crashes
+  were found and fixed here. `normalize_code()` used `int()`, which refuses
+  strings over 4300 digits on Python 3.11+ and raises `ValueError`; the T
+  word used `int(float(...))`, which raises `OverflowError` once `float()`
+  returns `inf`. Either exception unwound into `validate()`'s catch-all, so
+  **one absurd line silently disabled linting for the whole file** — a
+  linter that fails open is worse than one that fails loudly. Both now
+  degrade to ignoring the unreadable word.
+- **A malformed `didChangeConfiguration` can't take the handler down.**
+  `{"gcode": null}` used to raise `AttributeError` mid-loop, leaving open
+  files showing stale diagnostics. Every level of that payload is now
+  type-checked, and `resolve_dialect()` ignores any dialect name it doesn't
+  recognise.
+- **Debounce timers don't outlive their document.** Closing a file now
+  cancels its pending timer, so a keystroke made just before closing can't
+  re-publish the squiggles that close cleared.
+
+Not a vulnerability but worth knowing: the CI actions are pinned to major
+versions (`actions/checkout@v4`), not commit SHAs. Pinning to SHAs would
+harden the release pipeline against a compromised action.
 
 ## Troubleshooting (Windows)
 

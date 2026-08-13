@@ -107,10 +107,23 @@ _BASE_G = {
     "G58": "**G58 — Work offset 5.**",
     "G59": "**G59 — Work offset 6.**",
     "G80": "**G80 — Cancel canned cycle.**",
+    # The full canned-cycle family. These must stay in step with
+    # CANNED_CYCLES above: a code the engine treats as a cycle but does not
+    # document gets flagged "not a known G-code" on a perfectly normal
+    # program — G73 peck drilling is about as common as machining gets.
+    # tests/test_dialects.py asserts the two lists agree.
+    "G73": "**G73 — High-speed peck drilling.** Retracts only by a small break-chip amount (`Q` = peck) instead of clearing the hole, so it's faster but relies on chips breaking.",
+    "G74": "**G74 — Left-hand tapping cycle.** Spindle runs CCW; the right-hand counterpart is `G84`.",
+    "G76": "**G76 — Fine boring cycle.** Orients the spindle at depth and shifts away by `Q` so the insert does not drag a witness line up the bore on retract.",
     "G81": "**G81 — Drill cycle**: feed to depth, rapid out.",
     "G82": "**G82 — Drill cycle with dwell** at the bottom (spot facing, counterbores).",
-    "G83": "**G83 — Peck drilling cycle.** Full retract between pecks (`Q` = peck depth).",
+    "G83": "**G83 — Peck drilling cycle.** Full retract between pecks (`Q` = peck depth), clearing chips completely — the deep-hole choice.",
     "G84": "**G84 — Tapping cycle.** Feed and speed must match the thread pitch.",
+    "G85": "**G85 — Boring cycle**: feed in, FEED back out. Leaves the best finish; also used for reaming.",
+    "G86": "**G86 — Boring cycle**: feed in, spindle stops, rapid out. Faster than `G85` but can mark the bore.",
+    "G87": "**G87 — Back boring cycle.** The tool enters the hole before it starts cutting, then bores on the way up.",
+    "G88": "**G88 — Boring cycle with dwell**, then a manual retract.",
+    "G89": "**G89 — Boring cycle with dwell** at depth, feeding back out.",
     "G90": "**G90 — Absolute positioning.** Words are coordinates.",
     "G91": "**G91 — Incremental positioning.** Words are distances from the current point.",
     "G92": "**G92 — Set position register** (shift the coordinate system, no motion).",
@@ -131,6 +144,11 @@ _BASE_M = {
     "M7": "**M7 — Mist coolant on.**",
     "M8": "**M8 — Flood coolant on.**",
     "M9": "**M9 — Coolant off.**",
+    # M19 is in the shared table because every CNC control below means the
+    # same thing by it: stop the spindle at a known angle (for boring-bar
+    # retract, back-boring, or an orientation-keyed tool change). Only the
+    # 3D-printer dialect has no such concept, and it doesn't use this table.
+    "M19": "**M19 — Spindle orientation.** Stops the spindle at a fixed angle. Some controls take the angle as `P`/`R`; others use a parameter.",
     "M30": "**M30 — Program end and rewind.** The usual last line.",
     "M98": "**M98 — Call subprogram** (`P` = program number, `L` = repeat count).",
     "M99": "**M99 — Return from subprogram** (or loop to top if used in the main).",
@@ -197,17 +215,83 @@ class Dialect:
     # Which G words start cutting the moment they execute (see the
     # CANNED_CYCLES comment above).
     cycle_codes: frozenset = CANNED_CYCLES
+    # Codes that are real (so hover documents them and the unknown-code lint
+    # stays quiet) but that should NOT appear in the completion dropdown.
+    # Built for LinuxCNC's user-defined M100–M199 block; see the comment
+    # over _LINUXCNC_USER_M_CODES.
+    completion_hidden: frozenset = frozenset()
 
 
+# Fanuc is also the DEFAULT dialect, which shapes what belongs in its M
+# table. Two different kinds of M-code live on a Fanuc-controlled machine:
+#
+#   * M0–M30ish: defined by Fanuc itself. Identical on every control.
+#   * Above that: "M-code macros" the MACHINE BUILDER assigns. Fanuc ships
+#     the control, Doosan/Mori/Hyundai-Wia/Fadal decide that M60 changes a
+#     pallet. This is why the same number can be a pallet change on one
+#     machine and a door opener on the next.
+#
+# The builder-assigned codes below are the assignments common enough to be
+# worth a hover, each labelled as such. They are documented ONLY — none of
+# them are wired into coolant_on/spindle_on, because being the default
+# dialect means these tables also get applied to files whose real control we
+# never identified (Haas posts write plain .nc, for instance), and quietly
+# crediting a code that means something else there would suppress a real
+# warning. Documenting a code is cheap; letting it satisfy a safety rule is
+# not.
 FANUC = Dialect(
     name="fanuc",
     title="Fanuc",
     rules=ALL_RULES,
     known_g=dict(_BASE_G),
-    known_m=dict(_BASE_M),
+    known_m={
+        **_BASE_M,
+        "M10": "**M10 — Rotary/4th-axis clamp** (builder-assigned). Clamp before cutting with the rotary parked.",
+        "M11": "**M11 — Rotary/4th-axis unclamp.** Program it before an indexing move, `M10` after.",
+        # Deliberately documented but NOT credited as spindle-or-coolant —
+        # see the block comment above. The hover says how to opt in.
+        "M13": "**M13 — Spindle CW + coolant on** in one code on many Fanuc-based machines (Doosan, Mori Seiki, Hardinge). **Not credited here as spindle or coolant**: on a Haas this number releases the 5th-axis brake, and this dialect is also the fallback for files of unknown origin. If your machine has the combo, add `M13`/`M14` to this dialect's `spindle_on` and `coolant_on` sets.",
+        "M14": "**M14 — Spindle CCW + coolant on** (same caveat as `M13`).",
+        "M29": "**M29 — Rigid tapping mode.** `M29 S500` on the line before `G84` locks spindle rotation to Z feed so the pitch is held by the control, not by a floating holder. Without it, `G84` is floating-tap tapping.",
+        "M41": "**M41 — Low gear range** (builder-assigned, two-speed spindles).",
+        "M42": "**M42 — High gear range** (builder-assigned).",
+        # The double-negative naming is Fanuc's, not a typo here: M49 is the
+        # one that TAKES the knobs away from the operator.
+        "M48": "**M48 — Override cancel OFF** — the feed and rapid override knobs work normally. The power-on default.",
+        "M49": "**M49 — Override cancel ON** — overrides are ignored and the machine runs at exactly the programmed feed. Usual around tapping cycles.",
+        "M60": "**M60 — Automatic pallet change** (builder-assigned; horizontals and pallet-pool machines).",
+        "M198": "**M198 — Call a subprogram from an external device** (DNC drip-feed, memory card), `P` = program number. `M98` calls from control memory instead.",
+    },
 )
 
+# A LinuxCNC config can define its own M-codes as executables named M100
+# through M199 sitting in the machine's config directory — M101 might fire
+# an air blast, M110 might open a door. The numbers are a real, documented
+# feature; only their MEANING is per-machine. Generating the whole block
+# with one generic doc keeps the unknown-code lint quiet about a legitimate
+# feature instead of squiggling a hundred valid numbers, and still gives
+# the hover something true to say.
+_LINUXCNC_USER_M = {
+    f"M{n}": (
+        f"**M{n} — User-defined M-code** (LinuxCNC). Runs the executable "
+        f"named `M{n}` in this machine's config directory, passing `P` and "
+        f"`Q` as arguments. What it does is specific to this machine — "
+        f"check the config, not a manual."
+    )
+    for n in range(100, 200)
+}
+
+# ...and they stay OUT of the completion dropdown. Hover and the lint still
+# know them, but offering 100 identical "user-defined" items would bury M1,
+# M2 and M30 under a wall of numbers this particular machine almost
+# certainly does not implement.
+_LINUXCNC_USER_M_CODES = frozenset(_LINUXCNC_USER_M)
+
 # LinuxCNC speaks the RS-274/NGC dialect: Fanuc-like, plus some extras.
+# Its M-codes are worth more trust than the rest of this file: the
+# interpreter implements this list ITSELF, in open source, so unlike the
+# builder-assigned numbers on a Fanuc or Mazak there is exactly one correct
+# answer for what M64 does.
 LINUXCNC = Dialect(
     name="linuxcnc",
     title="LinuxCNC",
@@ -221,32 +305,107 @@ LINUXCNC = Dialect(
     },
     known_m={
         **_BASE_M,
-        "M62": "**M62 — Digital output ON**, synchronized with motion (LinuxCNC).",
-        "M63": "**M63 — Digital output OFF**, synchronized with motion (LinuxCNC).",
+        # --- overrides and adaptive feed --------------------------------
+        # LinuxCNC words these the plain way round (M48 ENABLES overrides),
+        # where Fanuc names the same behaviour "override cancel off". Same
+        # effect, opposite-sounding sentence — worth knowing when you port a
+        # program between the two.
+        "M48": "**M48 — Enable feed and speed overrides** — the knobs work. The default state.",
+        "M49": "**M49 — Disable feed and speed overrides** — the machine runs at exactly the programmed feed and rpm.",
+        "M50": "**M50 — Feed override control.** `P1` on, `P0` off (finer-grained than M48/M49).",
+        # Collision worth flagging: this number is through-spindle COOLANT
+        # on a Mazak. It is the example the coolant-codes comment at the top
+        # of this file is built on.
+        "M51": "**M51 — Spindle speed override control.** `P1` on, `P0` off. NOT Mazak's through-spindle coolant.",
+        "M52": "**M52 — Adaptive feed control.** `P1` on: feed follows an external analog input.",
+        "M53": "**M53 — Feed stop control.** `P1` lets the feed-stop switch halt motion; `P0` ignores it.",
+        # --- tooling and pallets ----------------------------------------
+        "M60": "**M60 — Exchange pallet shuttle and stop** (LinuxCNC's `M30` without ending the program).",
+        "M61": "**M61 — Set the current tool number to `Q`** with no tool change. This is how you tell the control what you just put in the spindle by hand.",
+        # --- I/O --------------------------------------------------------
+        # The synchronized/immediate distinction is the whole point of these
+        # four: 62/63 queue with motion so the output flips exactly where
+        # the tool is, 64/65 fire the instant the interpreter reads them —
+        # which, with lookahead running, can be many moves early.
+        "M62": "**M62 — Digital output ON**, synchronized with motion (`P` = output number). Fires at the programmed point in the path.",
+        "M63": "**M63 — Digital output OFF**, synchronized with motion (`P`).",
+        "M64": "**M64 — Digital output ON immediately** (`P`), without waiting for motion — with lookahead active this can happen several moves early.",
+        "M65": "**M65 — Digital output OFF immediately** (`P`).",
+        "M66": "**M66 — Wait on an input.** `P` digital / `E` analog input, `L` = wait mode, `Q` = timeout in seconds.",
+        "M67": "**M67 — Analog output, synchronized with motion** (`E` = output, `Q` = value).",
+        "M68": "**M68 — Analog output, immediate** (`E`, `Q`).",
+        # --- modal state stack ------------------------------------------
+        "M70": "**M70 — Save modal state** (motion mode, units, offsets, feed…) onto a stack.",
+        "M71": "**M71 — Invalidate the saved modal state** — a later `M72` will not restore it.",
+        "M72": "**M72 — Restore modal state** saved by `M70`.",
+        "M73": "**M73 — Save modal state and auto-restore it** when the current subroutine returns. NOT the Haas through-tool air blast.",
+        **_LINUXCNC_USER_M,
     },
+    completion_hidden=_LINUXCNC_USER_M_CODES,
 )
 
 # Siemens SINUMERIK: tool length comp comes from the tool edge (D word on the
 # tool, not a G43 H call), so the two G43-related rules are dropped. Watch
 # out: G70/G71 mean inch/metric INPUT here — on a Fanuc lathe they are
 # finishing/roughing cycles. Same code, different planet.
+#
+# KNOWN LIMITATION, and it is an M-code one: on multi-spindle machines
+# Siemens addresses an M-code to a specific spindle by writing
+# `M2=3` — "spindle 2, code M3". The tokenizer in gcode_parser.py reads
+# letter+number, so it sees that as a bare M2 (PROGRAM END) and resets the
+# modal state mid-program, which then cascades into bogus feed/spindle
+# warnings for the rest of the file. Plain single-spindle mill programs are
+# unaffected — they write `M3 S2000` like everyone else. Fixing it properly
+# means teaching `tokenize()` the `M<spindle>=<code>` form, which is engine
+# work rather than a table entry, so it is deliberately not done here.
 SIEMENS = Dialect(
     name="siemens",
     title="Siemens SINUMERIK",
     rules=ALL_RULES - {R_G43_NO_H, R_NO_TLO_AFTER_M6},
     known_g={
         code: doc for code, doc in _BASE_G.items()
-        if code not in ("G43", "G44", "G49", "G80", "G81", "G82", "G83",
-                        "G84", "G98", "G99", "G20", "G21")
+        # The whole Fanuc canned-cycle family goes: on a SINUMERIK you drill
+        # with a named cycle call (CYCLE81, CYCLE83, POCKET3), not a G word.
+        if code not in ("G43", "G44", "G49", "G80", "G98", "G99", "G20",
+                        "G21", "G73", "G74", "G76", "G81", "G82", "G83",
+                        "G84", "G85", "G86", "G87", "G88", "G89")
     } | {
         "G70": "**G70 — Inch input** (Siemens). NOT the Fanuc finishing cycle.",
         "G71": "**G71 — Metric input** (Siemens). NOT the Fanuc roughing cycle.",
         "G64": "**G64 — Continuous-path (blending) mode** (Siemens).",
     },
+    # Siemens splits M-codes cleanly into two groups, and the split is the
+    # opposite of Fanuc's: M0–M5, M17, M19, M30, M40–M45 and M70 are
+    # PREDEFINED by Siemens and mean the same thing on every 840D. Almost
+    # everything else — including the coolant trio M7/M8/M9 that the base
+    # table contributes — is assigned by the machine builder. The coolant
+    # numbers happen to follow the industry convention on virtually every
+    # machine, which is why they stay in coolant_on/coolant_off here.
     known_m={
-        **_BASE_M,
-        "M17": "**M17 — End of subprogram** (Siemens).",
+        # M98/M99 are filtered out rather than inherited: Siemens has no
+        # such codes. A subprogram is called by NAME (`DRILL_PATTERN` or
+        # `CALL "DRILL_PATTERN"`) and returns with M17 or RET, so an M98 in
+        # a Siemens file is a post-processor set to the wrong control — the
+        # info-level unknown-code note is exactly the right response.
+        code: doc for code, doc in _BASE_M.items()
+        if code not in ("M98", "M99")
+    } | {
+        "M17": "**M17 — End of subprogram** (Siemens): return to the caller. `RET` does the same job without breaking continuous-path mode (`G64`), which is why finish-pass subprograms usually end with `RET`.",
+        "M19": "**M19 — Position the spindle** to the angle held in setting data. Newer Siemens programs use `SPOS=45` directly instead.",
+        "M40": "**M40 — Automatic gear-stage selection** — the control picks the range for the programmed `S`.",
+        "M41": "**M41 — Gear stage 1** (lowest range, highest torque).",
+        "M42": "**M42 — Gear stage 2.**",
+        "M43": "**M43 — Gear stage 3.**",
+        "M44": "**M44 — Gear stage 4.**",
+        "M45": "**M45 — Gear stage 5.**",
+        "M70": "**M70 — Switch the spindle into axis mode** — it stops behaving as a spindle and becomes a positioning (C) axis.",
     },
+    # No G-word canned cycles here, so nothing for the coolant rule to treat
+    # as a first cut. Siemens drilling is `CYCLE81(...)` — a named call this
+    # letter+number tokenizer cannot see at all, which is a limitation worth
+    # stating plainly rather than papering over with Fanuc codes that would
+    # never appear in a real Siemens program.
+    cycle_codes=frozenset(),
 )
 
 # Marlin (3D printers): no spindle, no cutter/tool-length comp, so only the
@@ -270,25 +429,152 @@ MARLIN = Dialect(
         "G91": "**G91 — Relative positioning.**",
         "G92": "**G92 — Set position**, most often `G92 E0` to zero the extruder.",
     },
+    # Unlike every CNC table in this file, this one can be taken almost at
+    # face value: Marlin is open source and one firmware, so an M-code means
+    # what the source says it means. The caveat is VERSION, not builder —
+    # older forks and vendor firmware (Prusa, Klipper's Marlin emulation)
+    # implement subsets, and a few codes need a compile-time option enabled.
     known_m={
+        # --- job / machine control ---------------------------------------
         "M0": "**M0 — Unconditional stop**, wait for user.",
+        "M1": "**M1 — Stop and wait for user**, same as `M0` in Marlin.",
+        # Marlin does not only drive printers: the same firmware runs laser
+        # engravers and small routers, and there it really does implement
+        # M3/M4/M5 and the coolant trio (air assist). They were already in
+        # this dialect's inherited spindle_on/coolant_on sets, so leaving
+        # them undocumented meant the lint called its own state codes
+        # unknown. The spindle and coolant RULES stay off for Marlin — a
+        # print file has no spindle and shouldn't be nagged about one.
+        "M3": "**M3 — Spindle/laser on, CW** (`S` = power or rpm). Needs the spindle/laser feature compiled in.",
+        "M4": "**M4 — Spindle/laser on, CCW.** On lasers this is dynamic power mode, scaled with feedrate.",
+        "M5": "**M5 — Spindle/laser off.**",
+        "M7": "**M7 — Mist coolant / air assist on** (needs `COOLANT_CONTROL`).",
+        "M8": "**M8 — Flood coolant on** (needs `COOLANT_CONTROL`).",
+        "M9": "**M9 — Coolant off.**",
+        "M17": "**M17 — Enable steppers** (energize the motors).",
+        "M18": "**M18 — Disable steppers**, identical to `M84`.",
+        "M80": "**M80 — Power supply ON** (ATX or relay-controlled PSU).",
+        "M81": "**M81 — Power supply OFF.**",
         "M82": "**M82 — Extruder absolute mode.**",
         "M83": "**M83 — Extruder relative mode.**",
-        "M84": "**M84 — Disable steppers.**",
+        "M84": "**M84 — Disable steppers.** `S` sets an idle timeout instead.",
+        "M85": "**M85 — Inactivity shutdown timer** (`S` seconds; `S0` disables it).",
+        "M108": "**M108 — Break out of a heating wait** (`M109`/`M190`) or continue past `M0`.",
+        "M110": "**M110 — Set the line number** used by checksum-verified serial comms.",
+        "M111": "**M111 — Set the debug output level** (`S`).",
+        "M112": "**M112 — EMERGENCY STOP.** Kills heaters and motion; the board needs `M999` or a reset afterwards.",
+        "M115": "**M115 — Report firmware name, version and capabilities.**",
+        "M117": "**M117 — Show a message on the LCD.**",
+        "M118": "**M118 — Echo a string back over serial** (host-script signalling).",
+        "M125": "**M125 — Park the head** and wait — the mechanism behind runout and pause handling.",
+        "M226": "**M226 — Wait for a pin to reach a state** (`P` = pin, `S` = state).",
+        "M300": "**M300 — Play a tone** (`S` = Hz, `P` = milliseconds).",
+        "M400": "**M400 — Wait for all queued moves to finish** before the next command. The planner-flush you need before probing or measuring.",
+        "M997": "**M997 — Begin a firmware update** (boards that support it).",
+        "M999": "**M999 — Restart after an emergency stop or halt.**",
+        # --- temperature ---------------------------------------------------
         "M104": "**M104 — Set hotend temperature** and continue (no wait).",
+        "M105": "**M105 — Report current temperatures.**",
         "M106": "**M106 — Part-cooling fan on** (`S0–255`).",
         "M107": "**M107 — Part-cooling fan off.**",
-        "M109": "**M109 — Set hotend temperature and WAIT** until reached.",
-        "M114": "**M114 — Report current position.**",
+        "M109": "**M109 — Set hotend temperature and WAIT** until reached. `R` waits for cooling too, `S` only for heating.",
         "M140": "**M140 — Set bed temperature** and continue (no wait).",
+        "M141": "**M141 — Set chamber temperature** and continue.",
+        "M149": "**M149 — Set temperature units** (`C`, `K` or `F`) for reports.",
+        "M155": "**M155 — Auto-report temperatures** every `S` seconds.",
         "M190": "**M190 — Set bed temperature and WAIT** until reached.",
-        "M600": "**M600 — Filament change.**",
-        # Fun dialect trap: on a CNC this ends the program; on Marlin it
-        # deletes a file from the SD card. Reason enough for dialect tables.
+        "M191": "**M191 — Set chamber temperature and WAIT.**",
+        "M301": "**M301 — Set hotend PID values** (`P`/`I`/`D`).",
+        "M302": "**M302 — Allow cold extrusion** (`S` = minimum extrude temperature, `P1` = allow). How you unload filament cold.",
+        "M303": "**M303 — PID autotune** (`E` heater, `S` target, `C` cycles).",
+        "M304": "**M304 — Set bed PID values.**",
+        # --- SD card -------------------------------------------------------
+        # M30 is the trap that justifies dialect tables all by itself, and
+        # M29 is a quieter one: rigid tapping on a Fanuc, stop-writing here.
+        "M20": "**M20 — List SD card contents.**",
+        "M21": "**M21 — Initialize the SD card.**",
+        "M22": "**M22 — Release the SD card.**",
+        "M23": "**M23 — Select an SD file** by name.",
+        "M24": "**M24 — Start or resume the SD print.**",
+        "M25": "**M25 — Pause the SD print.**",
+        "M26": "**M26 — Set the SD read position** (`S` = byte offset).",
+        "M27": "**M27 — Report SD print status.**",
+        "M28": "**M28 — Begin writing a file to SD.**",
+        "M29": "**M29 — Stop writing to SD** and close the file. On a Fanuc mill this same number is rigid-tapping mode.",
         "M30": "**M30 — Delete file from SD card** (Marlin!). On CNC controls this is program end.",
+        "M31": "**M31 — Report how long the current print has been running.**",
+        "M32": "**M32 — Select an SD file and start printing it.**",
+        "M524": "**M524 — Abort the current SD print.**",
+        "M928": "**M928 — Start logging serial output to an SD file.**",
+        # --- print job progress --------------------------------------------
+        "M73": "**M73 — Set print progress** (`P` = percent, `R` = minutes remaining) for the display. Slicers emit these.",
+        "M75": "**M75 — Start the print job timer.**",
+        "M76": "**M76 — Pause the print job timer.**",
+        "M77": "**M77 — Stop the print job timer.**",
+        "M78": "**M78 — Report print job statistics.**",
+        # --- motion tuning and limits ---------------------------------------
+        "M92": "**M92 — Set axis steps per unit** (`X`/`Y`/`Z`/`E`).",
+        "M114": "**M114 — Report current position.**",
+        "M119": "**M119 — Report endstop states** — the fastest way to check wiring.",
+        "M120": "**M120 — Enable endstops.**",
+        "M121": "**M121 — Disable endstops.**",
+        "M201": "**M201 — Set max print acceleration** per axis (mm/s²).",
+        "M203": "**M203 — Set max feedrate** per axis (mm/s).",
+        "M204": "**M204 — Set acceleration**: `P` printing, `R` retract, `T` travel.",
+        "M205": "**M205 — Advanced settings**: jerk (`X`/`Y`/`Z`/`E`) or junction deviation (`J`), min feedrate (`S`), min segment time (`B`).",
+        "M206": "**M206 — Set home offset** — shifts where the machine thinks zero is after homing.",
+        "M207": "**M207 — Set firmware retraction** (`S` length, `F` feedrate, `Z` hop).",
+        "M208": "**M208 — Set firmware recover (unretract)** length and feedrate.",
+        "M209": "**M209 — Enable/disable automatic firmware retract** (`S1`/`S0`) — turns every `G10`/`G11` on.",
+        "M211": "**M211 — Enable/disable software endstops** (`S1`/`S0`).",
+        "M220": "**M220 — Set feedrate percentage** (`S`) — the speed knob, in G-code.",
+        "M221": "**M221 — Set flow percentage** (`S`) — extrusion multiplier.",
+        "M290": "**M290 — Babystep** (`Z`) — nudge the nozzle while printing without changing offsets.",
+        "M900": "**M900 — Linear Advance factor** (`K`) — pressure compensation for extrusion.",
+        # --- probing and bed leveling ---------------------------------------
+        "M401": "**M401 — Deploy the Z probe.**",
+        "M402": "**M402 — Stow the Z probe.**",
+        "M420": "**M420 — Bed leveling state** (`S1`/`S0`), `Z` fade height, `L` loads a stored mesh.",
+        "M421": "**M421 — Set a single mesh point** (`I`/`J` index, `Z` value).",
+        "M425": "**M425 — Backlash compensation** settings.",
+        "M851": "**M851 — Probe offsets** (`X`/`Y`/`Z`). The `Z` value is the classic first-layer adjustment.",
+        # --- hardware / drivers ----------------------------------------------
+        "M42": "**M42 — Set a pin state** (`P` = pin, `S` = value). Direct I/O; easy to damage things with.",
+        "M150": "**M150 — Set RGB LED colour.** `R` red, `U` GREEN (`G` was already taken by G-codes), `B` blue, `P` brightness.",
+        "M250": "**M250 — Set LCD contrast** (`C`).",
+        "M280": "**M280 — Set servo position** (`P` = index, `S` = angle). Deploys BLTouch-style probes.",
+        "M350": "**M350 — Set microstepping mode.**",
+        "M569": "**M569 — Set TMC stepper driver mode**: `S0` spreadCycle, `S1` stealthChop.",
+        "M710": "**M710 — Controller fan settings.**",
+        "M906": "**M906 — Set TMC driver current** (mA).",
+        "M907": "**M907 — Set motor current** (digipot boards).",
+        "M914": "**M914 — Set TMC StallGuard homing sensitivity** (sensorless homing).",
+        # --- filament ---------------------------------------------------------
+        "M600": "**M600 — Filament change.** Parks, unloads and waits for the user.",
+        "M603": "**M603 — Configure the filament change** load/unload lengths used by `M600`.",
+        "M701": "**M701 — Load filament** (`L` = length).",
+        "M702": "**M702 — Unload filament.**",
+        # --- settings storage --------------------------------------------------
+        "M500": "**M500 — Save settings to EEPROM.**",
+        "M501": "**M501 — Load settings from EEPROM**, discarding unsaved changes.",
+        "M502": "**M502 — Reset settings to firmware defaults** (not saved until `M500`).",
+        "M503": "**M503 — Report the current settings.**",
+        "M504": "**M504 — Validate the EEPROM contents.**",
     },
+    # A printer has no canned cycles. This was inert anyway (the coolant
+    # rule is off for Marlin), but leaving the Fanuc drilling family in
+    # here implied a G81 would mean something on a 3D printer.
+    cycle_codes=frozenset(),
 )
 
+# Okuma OSP. This M table is deliberately the thinnest in the file, and
+# that is a statement rather than an oversight: OSP machines carry a large
+# M-code list, but it is assigned per machine and per option package, and
+# the published lists disagree with each other. Guessing here would be
+# worse than useless — a wrong hover on a machinist's screen outranks a
+# missing one — so this ships the codes that are common to every OSP
+# control and leaves the rest for you to paste in from YOUR machine's
+# M-code list, which is the one document that is actually authoritative.
 OKUMA = Dialect(
     name="okuma",
     title="Okuma OSP",
@@ -298,7 +584,14 @@ OKUMA = Dialect(
         "G15": "**G15 — Select work coordinate system** by number (`H` word) (Okuma).",
         "G16": "**G16 — Rotary axis coordinate designation** (Okuma).",
     },
-    known_m=dict(_BASE_M),
+    known_m={
+        **_BASE_M,
+        # Kept (they arrive from the base table) but re-documented, because
+        # a post writing Okuma's native subprogram syntax will never emit
+        # them and a programmer coming from Fanuc needs to know why.
+        "M98": "**M98 — Call subprogram** (`P` = program number), Fanuc-style. Okuma's own form is `CALL O1000`, returning with `RTS` — if your post writes `CALL`, you will never see this code.",
+        "M99": "**M99 — Return from subprogram**, Fanuc-style. Okuma's native equivalent is `RTS`.",
+    },
 )
 
 # Mazak (MAZATROL Matrix / Smooth controls running EIA/ISO programs): the

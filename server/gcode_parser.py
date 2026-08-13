@@ -75,13 +75,49 @@ class Word:
     end: int
 
 
+def _strip_zeros(digits):
+    """Leading-zero strip that behaves like int() but cannot fail.
+
+    The obvious spelling is `int(digits)`, and that is what this used to be
+    — but Python 3.11+ refuses to convert strings longer than 4300 digits
+    (a hardening measure against quadratic parsing) and raises ValueError.
+    A 4301-digit G word is nonsense, yet nonsense in ONE line used to cost
+    the file every diagnostic it had: the exception unwound through
+    check_line() into server.validate()'s catch-all, which logs and
+    publishes nothing. Text arriving from an editor buffer is the least
+    trustworthy input this program has, so the code path that touches every
+    single word of it is not the place for an operation that can throw.
+    """
+    sign = ""
+    if digits[:1] in ("+", "-"):
+        sign, digits = ("-" if digits[0] == "-" else ""), digits[1:]
+    # "007" -> "7", "000" -> "0", "" (from a bare ".5") -> "0"
+    return sign + (digits.lstrip("0") or "0")
+
+
 def normalize_code(letter, number):
     """Canonical form for table lookups: strip leading zeros, keep decimals.
     G01 -> G1, M03 -> M3, G38.2 -> G38.2."""
     if "." in number:
         whole, frac = number.split(".", 1)
-        return f"{letter}{int(whole or '0')}.{frac}"
-    return f"{letter}{int(number)}"
+        return f"{letter}{_strip_zeros(whole)}.{frac}"
+    return f"{letter}{_strip_zeros(number)}"
+
+
+def _tool_number(text):
+    """Read a T word as an int, or None if it is unreadable.
+
+    Tool numbers are counted, not measured, so this is the one place that
+    still needs a real int conversion — and `int(float("9" * 400))` raises
+    OverflowError, because float() quietly returns inf first. Same reasoning
+    as _strip_zeros: an unreadable T word is ignored, it does not get to
+    take the file's diagnostics down with it. The coolant rule already says
+    "the active tool" when the number is None.
+    """
+    try:
+        return int(float(text))
+    except (ValueError, OverflowError):
+        return None
 
 
 @dataclass
@@ -190,7 +226,7 @@ class GCodeParser:
         if "S" in by_letter:
             st.spindle_speed = float(by_letter["S"][-1].number)
         if "T" in by_letter:
-            st.staged_tool = int(float(by_letter["T"][-1].number))
+            st.staged_tool = _tool_number(by_letter["T"][-1].number)
             # On tool_change_on_t controls (Heidenhain) the T word IS the
             # tool change — unless this line is a tool DEFINITION or
             # preselect (G99/G51 there), whose T is just a table entry.

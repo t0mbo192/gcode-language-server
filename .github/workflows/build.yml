@@ -24,7 +24,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Runs first and gates everything below it — shipping a .vsix built from
+  # code that fails its own tests is worse than not shipping.
+  #
+  # The matrix floor is 3.9 because dialects.py merges tables with the
+  # `dict | dict` operator; the ceiling tracks whatever is current. The
+  # bundled builds pin 3.12, but the "universal" .vsix runs on whatever
+  # Python the user already has, so the range is the honest thing to test.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # pygls is only needed by tests/test_server.py; the engine tests have
+      # no dependencies at all and skip cleanly without it.
+      - run: pip install -r server/requirements.txt
+      - run: python -m unittest discover -s tests -t tests -v
+
   bundled:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +84,7 @@ jobs:
           path: "*.vsix"
 
   universal:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

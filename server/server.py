@@ -81,13 +81,21 @@ def validate(ls, uri):
         ls.show_message_log(f"gcode-ls validate error: {exc!r}")
 
 
+def _fire(ls, uri):
+    """What the debounce timer actually runs: forget the timer, then lint.
+    Dropping the entry first keeps _timers from growing one dead Timer per
+    file for the life of the session."""
+    _timers.pop(uri, None)
+    validate(ls, uri)
+
+
 def _schedule_validate(ls, uri):
     """Debounce: restart a 300 ms timer on every keystroke; only when the
     typing pauses does the re-lint actually run."""
     old = _timers.pop(uri, None)
     if old:
         old.cancel()
-    timer = threading.Timer(_DEBOUNCE_SECONDS, validate, args=(ls, uri))
+    timer = threading.Timer(_DEBOUNCE_SECONDS, _fire, args=(ls, uri))
     _timers[uri] = timer
     timer.start()
 
@@ -107,7 +115,15 @@ def on_change(ls, params):
 @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
 def on_close(ls, params):
     # Clear our squiggles for closed files; nobody's watching them anymore.
-    ls.publish_diagnostics(params.text_document.uri, [])
+    # Cancel any in-flight debounce first, or a timer armed by the last
+    # keystroke before closing fires afterwards and re-publishes the
+    # diagnostics we just cleared — for a document the workspace no longer
+    # holds, which is also how validate() ends up logging a lookup error.
+    uri = params.text_document.uri
+    pending = _timers.pop(uri, None)
+    if pending:
+        pending.cancel()
+    ls.publish_diagnostics(uri, [])
 
 
 @server.feature(types.WORKSPACE_DID_CHANGE_CONFIGURATION)
@@ -115,9 +131,18 @@ def on_configuration_change(ls, params):
     """The client pushes {"gcode": {...}} here at startup and whenever the
     user edits settings — so changing gcode.dialect re-lints live, no
     window reload needed."""
-    settings = getattr(params, "settings", None) or {}
+    # Defensive at every level, because this payload is whatever the client
+    # sent: `{"gcode": null}` used to raise AttributeError on the second
+    # .get() and take the handler down mid-loop, leaving open files with
+    # stale diagnostics. resolve_dialect() ignores any name it doesn't
+    # recognise, so a junk string is harmless past this point.
+    settings = getattr(params, "settings", None)
+    dialect = "auto"
     if isinstance(settings, dict):
-        _settings["dialect"] = settings.get("gcode", {}).get("dialect", "auto")
+        section = settings.get("gcode")
+        if isinstance(section, dict) and isinstance(section.get("dialect"), str):
+            dialect = section["dialect"]
+    _settings["dialect"] = dialect
     for uri in list(ls.workspace.text_documents):
         validate(ls, uri)
 
@@ -177,6 +202,11 @@ def on_completion(ls, params):
     items = []
     for table in (dialect.known_g, dialect.known_m):
         for code, doc_md in table.items():
+            # Some codes are valid but not worth suggesting — LinuxCNC's
+            # 100 user-defined M1xx slots would otherwise swamp the list.
+            # Which ones is dialect data, not knowledge this file has.
+            if code in dialect.completion_hidden:
+                continue
             items.append(types.CompletionItem(
                 label=code,
                 kind=types.CompletionItemKind.Keyword,

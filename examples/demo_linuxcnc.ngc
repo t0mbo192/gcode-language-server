@@ -1,0 +1,43 @@
+(LINUXCNC DEMO - THE .NGC EXTENSION SELECTS THE LINUXCNC DIALECT)
+(THIS CONTROL'S M-CODES ARE SPECIFIED IN THE INTERPRETER ITSELF, NOT)
+(ASSIGNED BY A MACHINE BUILDER - SO THE HOVERS HERE ARE EXACT)
+(1 DELIBERATE MISTAKE BELOW)
+
+(--- setup: the operator loaded T1 by hand, so tell the control about it ---)
+N10 G21 G17 G90 G54
+N20 M61 Q1                   (set current tool to 1 with NO tool change)
+N30 G0 X0 Y0
+N40 G43 H1 Z25.0
+
+(--- M62/M64: the difference that bites you is WHEN they fire ---)
+N50 M64 P0                   (dust shoe on - immediately, even during lookahead)
+N60 M3 S6000 M8
+N70 M62 P1                   (air blast on - queued to fire at THIS point in the path)
+N80 G1 Z-2.0 F300.0
+N90 G1 X60.0
+N100 M63 P1                  (air blast off, also synchronized)
+N110 G0 Z25.0
+
+(--- M70/M72: borrow the modal state, then hand it back ---)
+N120 M70                     (save motion mode, units, offsets, feed)
+N130 G91 G0 X10.0            (work incrementally for a moment)
+N140 M72                     (restore - back to G90 without having to re-state it)
+
+(--- M49: hold the programmed feed exactly, knobs ignored ---)
+N150 M49
+N160 G1 X70.0 F150.0
+N170 M48                     (give the operator the override knobs back)
+
+(--- user-defined codes: real numbers, machine-specific meaning ---)
+N180 M101 P1                 (runs the 'M101' script in this machine's config)
+
+(--- T2 cuts dry: the coolant rule still works with the bigger table ---)
+N190 G0 Z50.0 M5 M9
+N200 M6 T2
+N210 G0 X20.0 Y20.0
+N220 G43 H2 Z25.0            (G0 is still modal here, so this is a rapid)
+N230 M3 S3000
+N240 G1 Z-1.0 F200.0         (<-- flagged: T2 never turned any coolant on)
+N250 M5
+N260 G0 Z50.0
+N270 M2

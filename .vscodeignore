@@ -12,6 +12,7 @@ out/**/*.map
 .github/**
 docs/**
 build/**
+tests/**
 .gitignore
 
 # Python bytecode caches (regenerated on any machine that runs the server)

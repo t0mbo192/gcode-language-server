@@ -38,6 +38,12 @@
   "activationEvents": [
     "onLanguage:gcode"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "The server only reads the text of G-code files and returns diagnostics. It never executes program content, writes files, or opens network connections, and the interpreter path it launches is machine-scoped so a workspace cannot redirect it."
+    }
+  },
   "contributes": {
     "languages": [
       {
@@ -103,12 +109,14 @@
         "gcode.pythonPath": {
           "type": "string",
           "default": "python",
-          "description": "Path to the Python interpreter used to run the language server (needs pygls installed)."
+          "scope": "machine",
+          "description": "Path to the Python interpreter used to run the language server (needs pygls installed). Machine-scoped: it can only be set in your own user settings, never by a workspace, because the extension launches it as a process."
         }
       }
     }
   },
   "scripts": {
+    "test": "python -m unittest discover -s tests -t tests -v",
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
     "vscode:prepublish": "npm run compile",
