@@ -256,6 +256,28 @@ class TestHover(ServerTestCase):
         self.assertEqual(hover.range.start.character, 3)
         self.assertEqual(hover.range.end.character, 9)
 
+    def test_extended_address_hovers_the_real_code(self):
+        """Hover shared the tokenizer bug through its own copy of the word
+        regex: `M2=3` on a SINUMERIK showed M2 (program end) when it means
+        M3 (spindle CW). Both now go through GCodeParser.tokenize()."""
+        hover = self._hover("M2=3 S1=2000\n", 0, 1, uri="file:///a.mpf")
+        self.assertIn("clockwise", hover.contents.value.lower())
+        self.assertNotIn("Program end", hover.contents.value)
+
+    def test_extended_address_hover_spans_the_whole_word(self):
+        hover = self._hover("M2=3\n", 0, 1, uri="file:///a.mpf")
+        self.assertEqual(hover.range.start.character, 0)
+        self.assertEqual(hover.range.end.character, 4)
+
+    def test_same_text_still_reads_as_m2_on_a_fanuc(self):
+        hover = self._hover("M2=3\n", 0, 1, uri="file:///a.nc")
+        self.assertIn("Program end", hover.contents.value)
+
+    def test_codes_inside_comments_do_not_hover(self):
+        """Falls out of reusing the tokenizer, which masks comments — the
+        old private regex happily documented a G1 written in a note."""
+        self.assertIsNone(self._hover("G0 X0 (rapid, not G1 feed)\n", 0, 18))
+
     def test_unknown_code_has_no_hover(self):
         self.assertIsNone(self._hover("M123\n", 0, 1))
 

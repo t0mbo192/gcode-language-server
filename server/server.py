@@ -23,7 +23,6 @@ Message flow when you edit a file in VS Code:
     6. hovering a word sends textDocument/hover -> markdown from dialects.py
 """
 
-import re
 import threading
 
 from lsprotocol import types
@@ -41,9 +40,6 @@ _settings = {"dialect": "auto"}
 # One pending re-lint timer per open file (debouncing didChange).
 _DEBOUNCE_SECONDS = 0.3
 _timers = {}
-
-# Matches one word (letter + number) — used to find what's under the cursor.
-_WORD_RE = re.compile(r"(?i)([A-Z])\s*([+-]?(?:\d+\.\d*|\.\d+|\d+))")
 
 
 # --- linting ----------------------------------------------------------------
@@ -157,17 +153,22 @@ def on_hover(ls, params):
     except IndexError:
         return None
 
-    for m in _WORD_RE.finditer(line):
-        if not (m.start() <= params.position.character <= m.end()):
+    # Tokenize with the parser rather than a second regex of our own. That
+    # keeps one definition of "what is a word" — it is how hovering the
+    # Siemens `M2=3` shows M3 (spindle CW) instead of M2 (program end),
+    # and it means codes written inside a comment no longer hover, since
+    # the tokenizer masks comments.
+    dialect = DIALECTS[_dialect_for(doc)]
+    for word in GCodeParser.tokenize(line, dialect.extended_address):
+        if not (word.col <= params.position.character <= word.end):
             continue
-        letter = m.group(1).upper()
-        dialect = DIALECTS[_dialect_for(doc)]
+        letter = word.letter
 
         # G/M codes get their dialect-specific doc; parameter letters
         # (X, F, H, ...) get the generic word doc.
         text = None
         if letter in ("G", "M"):
-            code = normalize_code(letter, m.group(2))
+            code = normalize_code(letter, word.number)
             table = dialect.known_g if letter == "G" else dialect.known_m
             text = table.get(code)
             if text:
@@ -182,9 +183,9 @@ def on_hover(ls, params):
                 kind=types.MarkupKind.Markdown, value=text),
             range=types.Range(
                 start=types.Position(line=params.position.line,
-                                     character=m.start()),
+                                     character=word.col),
                 end=types.Position(line=params.position.line,
-                                   character=m.end())))
+                                   character=word.end)))
     return None
 
 

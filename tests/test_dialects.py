@@ -140,6 +140,20 @@ class TestTableInvariants(unittest.TestCase):
         for key, dialect in d.DIALECTS.items():
             self.assertEqual(key, dialect.name)
 
+    def test_extended_address_is_opt_in(self):
+        """Only SINUMERIK has the `M2=3` form. Every other dialect must
+        leave the set empty, or its tokenizing changes silently."""
+        self.assertEqual(d.SIEMENS.extended_address, frozenset({"M", "S"}))
+        for name, dialect in d.DIALECTS.items():
+            if name != "siemens":
+                self.assertEqual(dialect.extended_address, frozenset(), name)
+
+    def test_extended_address_letters_are_single_upper_case(self):
+        for name, dialect in d.DIALECTS.items():
+            for letter in dialect.extended_address:
+                with self.subTest(dialect=name, letter=letter):
+                    self.assertTrue(letter.isupper() and len(letter) == 1)
+
     def test_tool_def_codes_only_where_they_apply(self):
         """tool_def_codes is only meaningful when the T word is the tool
         change; setting one without the other is a silent no-op."""
