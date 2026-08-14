@@ -63,8 +63,11 @@ The lifecycle, message by message:
 ## Installing
 
 - **Marketplace**: search "G-Code Language Server" (publisher `t0mbo192`).
-  The platform-specific builds (Windows x64, Linux x64, macOS Intel/Apple
+  The platform-specific builds (Windows x64, Linux x64, macOS Apple
   Silicon) contain a standalone server executable — **no Python required**.
+  There is no bundled build for Intel Macs: PyInstaller can't
+  cross-compile and GitHub no longer allocates its Intel runners, so those
+  machines take the universal build below.
 - **From a `.vsix` file** (offline / locked-down work machines): Extensions
   panel → `···` menu → *Install from VSIX…*, or
   `code --install-extension gcode-language-server-win32-x64-0.2.0.vsix`.
@@ -389,7 +392,13 @@ npm run package:universal  # removes server/bin, packs the Python fallback
 
 PyInstaller can't cross-compile, so the other platforms are built by CI
 ([.github/workflows/build.yml](.github/workflows/build.yml)): every push
-builds win32-x64, linux-x64, darwin-x64, darwin-arm64, and universal as
-downloadable artifacts. Pushing a tag like `v0.2.0` publishes all five to
-the Marketplace — that needs a `VSCE_PAT` repository secret (an Azure
-DevOps personal access token with the *Marketplace → Manage* scope).
+builds win32-x64, linux-x64, darwin-arm64, and universal as downloadable
+artifacts, after the test job passes. Pushing a tag like `v0.2.0` publishes
+all four to the Marketplace — that needs a `VSCE_PAT` repository secret (an
+Azure DevOps personal access token with the *Marketplace → Manage* scope).
+
+**No darwin-x64.** That leg was dropped once GitHub stopped allocating
+`macos-13`, its last Intel runner — the job queued for 24 hours without
+starting while the rest of the matrix finished in under 90 seconds. An
+Intel binary needs an Intel runner, so Intel Macs use the universal build
+(Python 3 + pygls) until there's a cross-compilation story worth trusting.
