@@ -70,7 +70,7 @@ The lifecycle, message by message:
   machines take the universal build below.
 - **From a `.vsix` file** (offline / locked-down work machines): Extensions
   panel → `···` menu → *Install from VSIX…*, or
-  `code --install-extension gcode-language-server-win32-x64-0.2.0.vsix`.
+  `code --install-extension gcode-language-server-win32-x64-0.3.0.vsix`.
   Prefer the platform-specific file — it's self-contained. The universal
   file works anywhere but needs Python 3 plus
   `pip install "pygls>=1.3,<2.0"` on the machine.
@@ -417,7 +417,7 @@ npm run package:universal  # removes server/bin, packs the Python fallback
 PyInstaller can't cross-compile, so the other platforms are built by CI
 ([.github/workflows/build.yml](.github/workflows/build.yml)): every push
 builds win32-x64, linux-x64, darwin-arm64, and universal as downloadable
-artifacts, after the test job passes. Pushing a tag like `v0.2.0` publishes
+artifacts, after the test job passes. Pushing a tag like `v0.3.0` publishes
 all four to the Marketplace — that needs a `VSCE_PAT` repository secret (an
 Azure DevOps personal access token with the *Marketplace → Manage* scope).
 
