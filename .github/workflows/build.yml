@@ -57,10 +57,15 @@ jobs:
             target: win32-x64
           - os: ubuntu-latest
             target: linux-x64
-          # macos-13 is GitHub's last Intel runner; macos-latest is Apple
-          # Silicon. Two jobs -> both mac architectures get a native binary.
-          - os: macos-13
-            target: darwin-x64
+          # Apple Silicon only, and deliberately so. There WAS a darwin-x64
+          # entry building on macos-13 (GitHub's last Intel runner), but
+          # that label no longer gets allocated: the job sat queued for 24
+          # hours without ever starting while every other job in the matrix
+          # finished inside 90 seconds, then hit the queue limit. Since
+          # PyInstaller cannot cross-compile, an Intel binary would need an
+          # Intel runner, so there is no bundled build for those machines.
+          # Intel Macs are served by the universal .vsix instead, which runs
+          # `python server/server.py` and needs Python 3 + pygls.
           - os: macos-latest
             target: darwin-arm64
     runs-on: ${{ matrix.os }}
