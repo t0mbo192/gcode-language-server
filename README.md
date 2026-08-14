@@ -112,7 +112,7 @@ python -m unittest discover -s tests -t tests -v
 # or: npm test
 ```
 
-117 tests, no test framework to install — the engine has zero dependencies
+133 tests, no test framework to install — the engine has zero dependencies
 and its tests keep it that way. `tests/test_server.py` needs `pygls` (it
 tests the LSP layer) and skips itself cleanly if you haven't installed it.
 CI runs the suite on Python 3.9, 3.12 and 3.13 before any `.vsix` is built.
@@ -228,7 +228,7 @@ Fanuc as the default.
 | dialect | selected by | notable differences |
 |---|---|---|
 | `fanuc` | default | full rule set; Fanuc's own `M0–M30` plus the builder-assigned codes common across Fanuc-based machines — `M29` rigid tapping, `M48/M49` override cancel, `M41/M42` gear ranges, `M10/M11` rotary clamp, `M60` pallet change, `M198` DNC call |
-| `siemens` | `.mpf` `.spf` | drops the G43 rules (length comp comes from the tool edge); `G70/G71` are inch/metric input, not lathe cycles; Siemens' predefined M set — `M17` end-of-subprogram, `M40–M45` gear stages, `M70` spindle-to-axis. `M98/M99` are **removed**: subprograms are called by name and return with `M17`/`RET` |
+| `siemens` | `.mpf` `.spf` | drops the G43 rules (length comp comes from the tool edge); `G70/G71` are inch/metric input, not lathe cycles; Siemens' predefined M set — `M17` end-of-subprogram, `M40–M45` gear stages, `M70` spindle-to-axis. `M98/M99` are **removed**: subprograms are called by name and return with `M17`/`RET`; the only dialect with **extended addressing** — `M2=3` is "spindle 2, code M3" |
 | `linuxcnc` | `.ngc` | adds `G33`, `G38.2`, `G64`, `G76`, and the full RS-274/NGC M set — `M62–M65` synchronized vs. immediate digital output, `M66–M68` input wait and analog out, `M70–M73` modal-state stack, `M61` set-tool-without-changing, `M48–M53` overrides, plus the user-defined `M100–M199` block (documented and lint-clean, hidden from completion) |
 | `marlin` | `.gcode` `.gc` | no spindle/comp rules; ~100 printer M-codes across temperature, SD, job control, motion tuning, probing/leveling, drivers and EEPROM; also the laser/router codes the same firmware implements (`M3/M4/M5`, `M7/M8/M9` air assist); `M30` deletes an SD file(!) and `M29` stops an SD write rather than arming rigid tapping |
 | `okuma` | `.min` | adds `G15/G16` work-coordinate codes; M table deliberately minimal (see below) |
@@ -268,6 +268,30 @@ only authoritative document. Two places where this shaped the code:
   lists disagree with each other. A wrong hover on a machinist's screen is
   worse than a missing one, so the guesses were left out for you to paste in
   from your own machine's list.
+
+### Siemens extended addressing
+
+One dialect changes what a *word* is, not just what a code means. On a
+multi-spindle SINUMERIK — a turn-mill with a counter-spindle — an M-code is
+aimed at one spindle by putting an index before the `=`:
+
+```gcode
+N80 S2=1500 M2=3     ; spindle 2: 1500 rpm, running clockwise
+```
+
+`M2=3` is **spindle 2, code M3**. Read as a plain letter-plus-number it's a
+bare `M2`, which on this control is *program end* — so the modal state reset
+mid-file and every line after it inherited a machine with no feed and no
+spindle. A legal counter-spindle program raised six false warnings; it now
+raises none.
+
+The tokenizer only applies this to dialects that opt in, via
+`Dialect.extended_address` (`{"M", "S"}` on Siemens, empty everywhere else),
+so no other control's tokenizing changed. The spindle index itself is
+discarded: `ModalState` tracks one spindle, so `M1=3` and `M2=3` both just
+mean "a spindle is turning". Per-spindle state would be a modelling change
+rather than a tokenizer one, and no rule needs it yet.
+`examples/demo_siemens.nc` has a worked example.
 
 Magic comment example (first 5 lines of the file):
 

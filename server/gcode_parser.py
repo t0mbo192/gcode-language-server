@@ -147,8 +147,18 @@ class ModalState:
 
 _COMMENT_PAREN = re.compile(r"\([^)]*\)")
 _COMMENT_SEMI = re.compile(r";.*")
+_NUMBER = r"[+-]?(?:\d+\.\d*|\.\d+|\d+)"
 # A word = letter + signed number. Whitespace between them is legal G-code.
-_WORD_RE = re.compile(r"(?i)([A-Z])\s*([+-]?(?:\d+\.\d*|\.\d+|\d+))")
+#
+# The optional "=number" tail is Siemens EXTENDED ADDRESSING, where the
+# number before the '=' is an index rather than the code: `M2=3` reads
+# "spindle 2, code M3". Only dialects that opt in (Dialect.extended_address)
+# act on it — but the group is matched for everyone so the tail is consumed
+# either way, which is exactly what the old regex did by leaving a bare
+# "3" that no letter claimed. No whitespace is allowed around the '=': the
+# tight form is what Siemens posts write, and staying strict keeps this
+# away from Heidenhain's `Q1 = +10` parameter assignments.
+_WORD_RE = re.compile(rf"(?i)([A-Z])\s*({_NUMBER})(?:=({_NUMBER}))?")
 
 MOTION_CODES = {"G0", "G1", "G2", "G3"}
 CUTTING_CODES = {"G1", "G2", "G3"}          # moves that actually cut
@@ -190,7 +200,23 @@ class GCodeParser:
         return line
 
     @staticmethod
-    def tokenize(line):
+    def tokenize(line, extended_address=frozenset()):
+        """Split one line into words.
+
+        `extended_address` is the dialect's set of letters that accept the
+        Siemens `<letter><index>=<code>` form (Dialect.extended_address —
+        `{"M", "S"}` on SINUMERIK, empty everywhere else). For those
+        letters the word's VALUE is the number after the '=': `M2=3` is
+        spindle 2 running M3, and reading it as a bare M2 meant PROGRAM END
+        — the modal state reset mid-file and every following line inherited
+        a machine with no feed and no spindle, so one line of a legal
+        turn-mill program buried the rest of it in false warnings.
+
+        The spindle index itself is discarded. ModalState tracks one
+        spindle, so `M1=3` and `M2=3` both simply mean "a spindle is
+        turning"; per-spindle state would be a real modelling change, not a
+        tokenizer one.
+        """
         code = GCodeParser._mask_comments(line)
         # Block delete: a leading '/' means "skip this line when the switch
         # is on". The switch is usually off, so we lint the line anyway.
@@ -198,8 +224,17 @@ class GCodeParser:
         if stripped.startswith("/"):
             i = code.index("/")
             code = code[:i] + " " + code[i + 1:]
-        return [Word(m.group(1).upper(), m.group(2), m.start(1), m.end(2))
-                for m in _WORD_RE.finditer(code)]
+
+        words = []
+        for m in _WORD_RE.finditer(code):
+            letter = m.group(1).upper()
+            number, end = m.group(2), m.end(2)
+            if m.group(3) is not None and letter in extended_address:
+                # The code is the value after '='; the span still covers the
+                # whole `M2=3` so squiggles and hovers land on all of it.
+                number, end = m.group(3), m.end(3)
+            words.append(Word(letter, number, m.start(1), end))
+        return words
 
     # -- the engine ----------------------------------------------------------
 
@@ -208,7 +243,7 @@ class GCodeParser:
         This is the interface server.py (and your own parser) builds on."""
         issues = []
         st = self.state
-        words = self.tokenize(line)
+        words = self.tokenize(line, self.dialect.extended_address)
         if not words:
             return issues  # blank line, pure comment, or a lone '%'
 

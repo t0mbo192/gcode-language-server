@@ -220,6 +220,12 @@ class Dialect:
     # Built for LinuxCNC's user-defined M100–M199 block; see the comment
     # over _LINUXCNC_USER_M_CODES.
     completion_hidden: frozenset = frozenset()
+    # Letters that accept Siemens EXTENDED ADDRESSING, `<letter><index>=
+    # <value>`, where the number before the '=' selects a spindle rather
+    # than being the code itself: `M2=3` is "spindle 2, code M3" and
+    # `S1=2000` is "spindle 1 at 2000 rpm". Empty for every control that
+    # doesn't have the syntax, which leaves their tokenizing untouched.
+    extended_address: frozenset = frozenset()
 
 
 # Fanuc is also the DEFAULT dialect, which shapes what belongs in its M
@@ -349,15 +355,18 @@ LINUXCNC = Dialect(
 # out: G70/G71 mean inch/metric INPUT here — on a Fanuc lathe they are
 # finishing/roughing cycles. Same code, different planet.
 #
-# KNOWN LIMITATION, and it is an M-code one: on multi-spindle machines
-# Siemens addresses an M-code to a specific spindle by writing
-# `M2=3` — "spindle 2, code M3". The tokenizer in gcode_parser.py reads
-# letter+number, so it sees that as a bare M2 (PROGRAM END) and resets the
-# modal state mid-program, which then cascades into bogus feed/spindle
-# warnings for the rest of the file. Plain single-spindle mill programs are
-# unaffected — they write `M3 S2000` like everyone else. Fixing it properly
-# means teaching `tokenize()` the `M<spindle>=<code>` form, which is engine
-# work rather than a table entry, so it is deliberately not done here.
+# EXTENDED ADDRESSING is the other thing that makes this control different
+# to tokenize. On multi-spindle machines (turn-mills with a counter-spindle)
+# Siemens aims an M-code at one spindle by writing `M2=3` — "spindle 2, code
+# M3" — and sets its speed with `S1=2000`. Read as plain letter+number that
+# is a bare M2, which on this control is PROGRAM END: the modal state used
+# to reset mid-file and every line after it inherited a machine with no feed
+# and no spindle, burying the rest of a legal program in false warnings.
+# `extended_address` below tells the tokenizer that M and S carry an index
+# here, so the value after the '=' is the code. The index itself is dropped:
+# ModalState tracks a single spindle, so `M1=3` and `M2=3` both just mean
+# "a spindle is turning". Per-spindle state is a modelling change, not a
+# tokenizer one, and no rule needs it yet.
 SIEMENS = Dialect(
     name="siemens",
     title="Siemens SINUMERIK",
@@ -406,6 +415,8 @@ SIEMENS = Dialect(
     # stating plainly rather than papering over with Fanuc codes that would
     # never appear in a real Siemens program.
     cycle_codes=frozenset(),
+    # `M2=3` (spindle 2, code M3) and `S1=2000` — see the block comment above.
+    extended_address=frozenset({"M", "S"}),
 )
 
 # Marlin (3D printers): no spindle, no cutter/tool-length comp, so only the

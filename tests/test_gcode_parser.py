@@ -109,6 +109,77 @@ class TestTokenize(unittest.TestCase):
             self.assertEqual(tokenize(line), [], line)
 
 
+class TestSiemensExtendedAddressing(unittest.TestCase):
+    """`M2=3` is "spindle 2, code M3", not a bare M2.
+
+    This one was a cascade, not a single wrong squiggle: M2 is PROGRAM END
+    on a SINUMERIK, so reading it that way reset the modal state mid-file
+    and every line afterwards inherited a machine with no feed and no
+    spindle. A legal counter-spindle program raised six false warnings.
+    """
+
+    TURN_MILL = (
+        "N10 G17 G54\n"
+        "N20 M1=3 S1=2000 M8\n"       # main spindle CW at 2000
+        "N30 G1 X10 F250\n"
+        "N40 M2=3 S2=1500\n"          # counter-spindle CW at 1500
+        "N50 G1 X20\n"
+        "N60 G1 X30\n"
+        "N70 M30\n"
+    )
+
+    def test_legal_turn_mill_program_is_silent(self):
+        self.assertEqual(rules(self.TURN_MILL, dialect="siemens"), [])
+
+    def test_value_after_equals_is_the_code(self):
+        words = tokenize("M2=3", d.SIEMENS.extended_address)
+        self.assertEqual([(w.letter, w.number) for w in words], [("M", "3")])
+
+    def test_span_covers_the_whole_word(self):
+        """Squiggles and hovers should cover `M2=3`, not just the `M2`."""
+        word = tokenize("M2=3", d.SIEMENS.extended_address)[0]
+        self.assertEqual((word.col, word.end), (0, 4))
+
+    def test_speed_is_read_from_the_indexed_form(self):
+        words = tokenize("S1=2000", d.SIEMENS.extended_address)
+        self.assertEqual([(w.letter, w.number) for w in words],
+                         [("S", "2000")])
+
+    def test_indexed_spindle_start_counts_as_spindle_on(self):
+        text = "M2=3 S1=1000 M8\nG1 X1 F100.\nM30\n"
+        found = rules(text, dialect="siemens")
+        self.assertNotIn(d.R_SPINDLE_OFF, found)
+        self.assertNotIn(d.R_NO_COOLANT, found)
+
+    def test_indexed_gear_stage_is_a_known_code(self):
+        """M1=40 is gear-stage-auto on spindle 1, and M40 is documented."""
+        text = "M1=40\nM3 S1000 M8\nG1 X1 F100.\nM30\n"
+        self.assertNotIn(d.R_UNKNOWN_CODE, rules(text, dialect="siemens"))
+
+    def test_plain_m2_is_still_program_end(self):
+        """The whole point is telling the two apart, so check the other
+        side of the distinction too."""
+        text = "M3 S1000 M8\nG1 X1 F100.\nM2\nG1 X2\nM30\n"
+        # State reset by M2 means the trailing move has no feed again.
+        self.assertIn(d.R_FEED_MISSING, rules(text, dialect="siemens"))
+
+    def test_other_dialects_tokenize_exactly_as_before(self):
+        """Only dialects that opt in act on the '=' tail. Fanuc reads the
+        bare M2 — and, as before the change, no stray word from the tail."""
+        words = tokenize("M2=3")
+        self.assertEqual([(w.letter, w.number) for w in words], [("M", "2")])
+
+    def test_fanuc_macro_assignments_are_untouched(self):
+        """`#100=5` has no letter, so it never was a word and still isn't."""
+        self.assertEqual(tokenize("#100=5"), [])
+
+    def test_whitespace_around_equals_is_not_extended_addressing(self):
+        """Kept strict on purpose: Heidenhain writes `Q1 = +10` in FN
+        parameter assignments, and that must not become Q+10."""
+        words = tokenize("Q1 = +10", frozenset({"Q"}))
+        self.assertEqual([(w.letter, w.number) for w in words], [("Q", "1")])
+
+
 class TestModalState(unittest.TestCase):
     """The reason this project isn't a regex: state carries across lines."""
 
