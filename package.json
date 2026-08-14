@@ -2,7 +2,7 @@
   "name": "gcode-language-server",
   "displayName": "G-Code Language Server",
   "description": "Semantic diagnostics, hover docs, and completions for CNC G-code. A Python language server with a thin VS Code client.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "t0mbo192",
   "license": "MIT",
   "icon": "icon.png",
